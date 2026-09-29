@@ -1,0 +1,38 @@
+{
+  "name": "手指外展",
+  "source_video": "/Users/nothing/Downloads/efee9eb739974cb496ec67887d7c4361.mp4",
+  "start_frame": 2940,
+  "end_frame": 3750,
+  "video_fps": 30.0,
+  "roi": [0.03, 0.20, 0.94, 0.75],
+  "phase_sequence": ["thumb_neutral", "thumb_abduct", "thumb_return", "index_neutral", "index_abduct", "index_return"],
+  "phase_marks": {"prepare": [2940, 2970], "thumb": [2970, 3300], "index": [3300, 3750]},
+  "expected_counts": {"thumb": 8, "index": 8},
+  "reference_points": ["wrist", "thumb_mcp", "thumb_tip", "index_mcp", "index_tip", "middle_mcp"],
+  "contact_region": "table_roi",
+  "motion_axis": "finger_tip_from_palm",
+  "duration_range": [0.05, 4.0],
+  "motion_range": {
+    "thumb_min_delta": 0.055,
+    "thumb_return_delta": 0.025,
+    "index_min_delta": 0.045,
+    "index_return_delta": 0.020,
+    "min_abduction_ratio": 0.055,
+    "return_ratio": 0.025
+  },
+  "position_tolerance": {"wrist_drift_ratio": 0.30},
+  "stable_frame_count": 3,
+  "missing_frame_tolerance": 0.35,
+  "bridge_duration": 0.35,
+  "baseline_sample_duration": 0.4,
+  "min_cycle_interval": 0.45,
+  "max_candidate_duration": 4.0,
+  "occlusion_intervals": [],
+  "guidance_rois": {
+    "wrist": [0.34, 0.52, 0.56, 0.82],
+    "palm": [0.42, 0.40, 0.68, 0.70],
+    "thumb": [0.30, 0.30, 0.58, 0.62],
+    "index": [0.48, 0.24, 0.70, 0.58]
+  },
+  "risk_prompts": ["请保持手腕稳定", "避免整只手掌横向代偿"]
+}

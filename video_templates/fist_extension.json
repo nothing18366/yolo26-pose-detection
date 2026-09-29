@@ -1,0 +1,20 @@
+{
+  "name": "握拳伸展",
+  "source": "握拳伸展.mp4",
+  "video_fps": 30.0,
+  "reference_points": ["left_wrist", "right_wrist", "four_finger_joints", "finger_tips", "palm_centers"],
+  "cycle_definition": "both open -> both closed -> both open",
+  "duration_range": [0.7, 3.0],
+  "motion_range": ["open_angle", "closed_angle"],
+  "direction_range": null,
+  "contact_region": "both hands visible in table ROI",
+  "release_condition": "both hands return to open state",
+  "phases": ["张开", "握拳", "返回张开", "完成"],
+  "open_angle": 145.0,
+  "closed_angle": 110.0,
+  "min_duration": 0.7,
+  "max_duration": 3.0,
+  "max_drift_ratio": 0.25,
+  "stable_frames": 3,
+  "roi": [0.05, 0.28, 0.90, 0.70]
+}

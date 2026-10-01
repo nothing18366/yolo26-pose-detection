@@ -1,7 +1,7 @@
 """Minimal keyboard-assisted phase annotator for the supplied reference videos.
 
 Usage:
-  python video_template_tool.py --video PATH --action rub --output video_templates/rub_hand_back.json
+  python tools/video_template_tool.py --video PATH --action rub --output video_templates/rub_hand_back.json
 
 Keys: space pause/play, 1/2/3/4 mark a phase, c mark a cycle, q save and quit.
 The tool records frame numbers only; measured tolerances remain in the JSON template.

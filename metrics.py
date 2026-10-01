@@ -1,7 +1,7 @@
 """关键点几何与手指关节角计算。
 
 角度约定：三点余弦定理，180° = 完全伸直，0° = 完全折叠。
-坐标一律为像素 (x, y)，所有函数都是纯函数，方便单独测试。
+图像坐标使用像素 (x, y)，单指形状特征优先使用 MediaPipe 三维手部坐标。
 """
 
 import math
@@ -155,6 +155,70 @@ def finger_extension_features(pts):
     }
 
 
+def isolated_finger_features(hand):
+    """Hand-local shape ratios; use the model's 3D hand coordinates when available."""
+    source = hand.get("world")
+    pts = np.asarray(source if source is not None else hand["pts"], dtype=float)
+    length = np.linalg.norm(pts[9] - pts[0])
+    width = np.linalg.norm(pts[5] - pts[17])
+    if length < 1e-6 or width < 1e-6 or not np.isfinite(pts).all():
+        return None
+    if source is None and length < 0.5 * width:
+        return None
+    across = (pts[5] - pts[17]) / width
+    reach = {name: dist(pts[tip], pts[0]) / max(dist(pts[mcp], pts[0]), 1e-6)
+             for name, (mcp, _, _, tip) in FINGERS.items()}
+    return {
+        "thumb": float(np.dot(pts[4] - pts[2], across) / length),
+        "thumb_gap": dist(pts[4], pts[5]) / length,
+        "index": reach["index"],
+        "index_angle": angle_at(pts[5], pts[6], pts[7]),
+        "other_reach": float(np.median([reach[name] for name in ("middle", "ring", "pinky")])),
+        "source": "world" if source is not None else "image",
+    }
+
+
+def stretch_features(affected, healthy, pose=None):
+    """Contact and motion proxies in hand/body coordinates, without a table ROI."""
+    pts = np.asarray(affected["pts"], dtype=float)
+    targets = np.asarray(healthy["pts"], dtype=float)
+    length = hand_length(pts)
+    if pose is not None:
+        side = affected.get("side")
+        if side in ELBOW:
+            e, w = ELBOW[side], WRIST[side]
+            if pose[e, 2] >= .4 and pose[w, 2] >= .4:
+                length = max(length, .35 * dist(pose[e, :2], pose[w, :2]))
+    if length < 5 or not np.isfinite(pts).all():
+        return None
+    vertical = np.array([0.0, 1.0])
+    if pose is not None and all(pose[i, 2] >= .5 for i in (5, 6, 11, 12)):
+        vertical = unit((pose[11, :2] + pose[12, :2]) - (pose[5, :2] + pose[6, :2]))
+    directions = [unit(pts[tip] - pts[mcp]) for mcp, _, _, tip in FINGERS.values()]
+    direction = float(np.median([np.dot(v, vertical) for v in directions]))
+    assisting_direction = (float(np.median([np.dot(unit(targets[tip] - targets[mcp]), vertical)
+                                            for mcp, _, _, tip in FINGERS.values()]))
+                            if len(targets) == 21 else None)
+    gaps = np.array([np.min(np.linalg.norm(targets - tip, axis=1)) for tip in fingertips(pts)]) / length
+    motion = {"curl": curl_metric(finger_angles(pts))}
+    if affected.get("world") is not None:
+        world = np.asarray(affected["world"], dtype=float)
+        forward = world[9] - world[0]
+        motion["pitch"] = float(np.degrees(np.arctan2(forward[2], np.linalg.norm(forward[:2]))))
+    if pose is not None and affected.get("side") in WRIST:
+        side = affected["side"]
+        wrist_i, other_i = WRIST[side], WRIST["right" if side == "left" else "left"]
+        elbow_i = ELBOW[side]
+        if all(pose[i, 2] >= .5 for i in (wrist_i, other_i, elbow_i)):
+            forearm = dist(pose[elbow_i, :2], pose[wrist_i, :2])
+            if (forearm >= 20 and dist(pts[0], pose[wrist_i, :2]) <= length and
+                    dist(targets[0], pose[other_i, :2]) <= length):
+                motion["wrist_gap"] = 100.0 * dist(pose[wrist_i, :2], pose[other_i, :2]) / forearm
+    return {"direction": direction, "assisting_direction": assisting_direction,
+            "gap": float(np.median(gaps)), "length": length,
+            "motion": motion}
+
+
 def roi_contains(point, roi, width, height, tolerance=0.0):
     """Check a normalized [x0, y0, x1, y1] ROI against pixel coordinates."""
     x0, y0, x1, y1 = roi
@@ -187,16 +251,6 @@ def palm_normal_z(xyz):
     a = xyz[5] - xyz[0]
     b = xyz[17] - xyz[0]
     return float(np.cross(a, b)[2])
-
-
-def finger_axis(pts):
-    """四指 MCP->TIP 的平均方向（单位向量），作为手指长轴。"""
-    pts = np.asarray(pts, dtype=float)
-    acc = np.zeros(2)
-    for f in FOUR:
-        mcp, _pip, _dip, tip = FINGERS[f]
-        acc += unit(pts[tip] - pts[mcp])
-    return unit(acc) if np.linalg.norm(acc) > 1e-6 else np.array([0.0, 1.0])
 
 
 def forearm_axis(elbow, wrist):

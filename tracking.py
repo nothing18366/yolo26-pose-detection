@@ -37,22 +37,45 @@ class HandTracker:
         return float(np.linalg.norm(np.asarray(hand["pts"])[0] - np.asarray(previous["pts"])[0]))
 
     def _assign_single(self, hand, previous):
-        if previous:
-            side = min(previous, key=lambda s: self._distance(hand, previous[s]))
-            return side
         explicit = str(hand.get("side", "")).lower()
         if explicit in ("left", "right"):
             return explicit
+        if previous:
+            side = min(previous, key=lambda s: self._distance(hand, previous[s]))
+            return side
         cat = str(hand.get("cat", "")).lower()
         return "right" if cat == "left" else "left"
 
-    def update(self, hands, t):
+    def assign(self, hands, pose=None, frame_width=None):
+        """Assign detected hands without changing cross-frame tracking state."""
         hands = list(hands)
         assigned = {}
         previous = {s: h for s, h in self.last.items()}
+        pose_wrists = {}
+        if pose is not None and len(pose) > 10:
+            for side, index in (("left", 9), ("right", 10)):
+                if pose[index, 2] >= 0.6:
+                    pose_wrists[side] = np.asarray(pose[index, :2], dtype=float)
+        separation = (np.linalg.norm(pose_wrists["left"] - pose_wrists["right"])
+                      if len(pose_wrists) == 2 else 0.0)
+        min_separation = max(35.0, 80.0 * frame_width / 720.0) if frame_width else 80.0
+        pose_clear = separation >= min_separation
 
         if len(hands) == 2:
-            if all(s in previous for s in ("left", "right")):
+            explicit_sides = {h.get("side") for h in hands}
+            if explicit_sides == {"left", "right"}:
+                left_i = next(i for i, h in enumerate(hands) if h["side"] == "left")
+                right_i = 1 - left_i
+                pose_clear = True
+            elif pose_clear:
+                pairs = [(0, 1), (1, 0)]
+                costs = [sum(np.linalg.norm(hands[i]["pts"][0] - pose_wrists[side])
+                             for i, side in zip(pair, ("left", "right"))) for pair in pairs]
+                left_i, right_i = pairs[int(np.argmin(costs))]
+                if any(np.linalg.norm(hands[i]["pts"][0] - pose_wrists[side]) > separation * 0.55
+                       for i, side in zip((left_i, right_i), ("left", "right"))):
+                    pose_clear = False
+            if not pose_clear and all(s in previous for s in ("left", "right")):
                 pairs = [(0, 1), (1, 0)]
                 costs = []
                 for li, ri in pairs:
@@ -61,12 +84,23 @@ class HandTracker:
                         + np.linalg.norm(hands[ri]["pts"][0] - previous["right"]["pts"][0])
                     )
                 left_i, right_i = pairs[int(np.argmin(costs))]
-            else:
+            elif not pose_clear:
                 left_i, right_i = sorted(range(2), key=lambda i: hands[i]["pts"][0][0], reverse=True)
             assigned["left"] = hands[left_i]
             assigned["right"] = hands[right_i]
         elif len(hands) == 1:
-            assigned[self._assign_single(hands[0], previous)] = hands[0]
+            side = self._assign_single(hands[0], previous)
+            if pose_clear and hands[0].get("side") not in ("left", "right"):
+                near = min(pose_wrists, key=lambda s: np.linalg.norm(hands[0]["pts"][0] - pose_wrists[s]))
+                if np.linalg.norm(hands[0]["pts"][0] - pose_wrists[near]) < separation * 0.35:
+                    side = near
+            assigned[side] = hands[0]
+
+        return assigned
+
+    def update(self, hands, t, pose=None, frame_width=None):
+        assigned = self.assign(hands, pose, frame_width)
+        previous = self.last.copy()
 
         result = []
         for side, hand in assigned.items():

@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+aiortc==1.14.0
+av==15.0.0
+numpy
+opencv-python-headless
+mediapipe==0.10.35
+ultralytics==8.4.160

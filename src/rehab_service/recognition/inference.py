@@ -1,7 +1,6 @@
 """Shared pose/hand inference used by the Qt app and network service."""
 
 import time
-from pathlib import Path
 
 import cv2
 import mediapipe as mp
@@ -10,13 +9,13 @@ import torch
 from mediapipe.tasks.python import BaseOptions, vision
 from ultralytics import YOLO
 
-from metrics import ExpSmoother, finger_angles, local_frame, palm_center
-from tracking import HandTracker
-from video_templates import load as load_template
+from rehab_service.recognition.metrics import ExpSmoother, finger_angles, local_frame, palm_center
+from rehab_service.recognition.tracking import HandTracker
+from rehab_service.recognition.templates import load as load_template
 
 torch.set_num_threads(4)
 
-MODEL_DIR = Path(__file__).parent / "models"
+from rehab_service.settings import MODEL_DIR
 MODEL = str(MODEL_DIR / "yolo26n-pose.pt")
 HAND_MODEL = str(MODEL_DIR / "hand_landmarker.task")
 HAND_LINKS = vision.HandLandmarksConnections.HAND_CONNECTIONS

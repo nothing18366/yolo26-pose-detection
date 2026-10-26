@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import os
+import tempfile
+from unittest.mock import patch
 import sys
 from pathlib import Path
 from time import monotonic
@@ -12,12 +15,13 @@ from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription, V
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
 
-import inference
-import main
-import server
+import rehab_service.recognition.inference as inference
+from rehab_service.desktop import app as main
+from rehab_service.api import rtc as server
+from rehab_service.app import app
 
 
 class FakeEngine:
@@ -96,6 +100,10 @@ async def test_webrtc(client):
     try:
         await pc.setLocalDescription(await pc.createOffer())
         payload = offer_data(pc.localDescription.sdp)
+        patient = client.post("/api/v1/patients", json={"name": "RTC测试", "affected_side": "left", "forearm_cm": 25}).json()
+        run = client.post("/api/v1/training-runs", json={"patient_id": patient["id"], "mode": "single", "action": "fist", "target_reps": 3}).json()
+        client.put("/api/v1/training-runs/" + run["id"] + "/feedback/pre", json={"state": "skipped"})
+        payload["session_id"] = client.post("/api/v1/sessions", json={"run_id": run["id"], "item_index": 0}).json()["id"]
         response = await asyncio.to_thread(client.post, "/rtc/offer", json=payload)
         assert response.status_code == 200, response.text
         assert server.engine.action_key == "fist" and server.engine.affected_side == "left"
@@ -133,7 +141,9 @@ def test_service():
     server.active_client = None
     assert main.PoseEngine is inference.PoseEngine
     assert server.PoseEngine is inference.PoseEngine
-    with TestClient(server.app) as client:
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"REHAB_DB": directory + "/db.sqlite3"}), TestClient(app) as client:
+        assert client.post("/rtc/offer", json=offer_data("bad")).status_code == 401
+        client.headers["Authorization"] = "Bearer " + client.post("/api/v1/auth/staff-login", json={"username": "admin", "password": "123"}).json()["token"]
         health = client.get("/health").json()
         assert health["model_loaded"] is True and health["device"] == "test"
         assert client.post("/rtc/offer", json=offer_data("bad", action="unknown")).status_code == 400

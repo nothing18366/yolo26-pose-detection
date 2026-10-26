@@ -1,6 +1,6 @@
 """可运行自检：几何/角度 + 三个动作状态机 + Qt 界面联调（合成关键点，不需要摄像头）。
 
-运行：python tests/test_rehab.py
+运行：python tests/test_actions_ui.py
 """
 
 import math
@@ -9,11 +9,11 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # 无摄像头/无显示器也能跑界面联调
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
 
-from metrics import (
+from rehab_service.recognition.metrics import (
     ELBOW,
     FINGERS,
     FOUR,
@@ -27,11 +27,11 @@ from metrics import (
     line_angle,
     palm_center,
 )
-from actions import ELBOW as A_ELBOW, WRIST as A_WRIST  # noqa: F401  (保持与实现同一份索引)
-from actions import (ActionContext, CupTransfer, FingerAbduction,
+from rehab_service.recognition.actions import ELBOW as A_ELBOW, WRIST as A_WRIST  # noqa: F401  (保持与实现同一份索引)
+from rehab_service.recognition.actions import (ActionContext, CupTransfer, FingerAbduction,
                      FingerPress, FingerStretch, FistOpenClose, RubBackOfHand)
-from video_templates import load as load_template
-from tracking import HandTracker
+from rehab_service.recognition.templates import load as load_template
+from rehab_service.recognition.tracking import HandTracker
 
 
 def rotate(v, rad):
@@ -665,7 +665,7 @@ def test_press_counts_release_cycles_without_leaving_target():
 def _window():
     from PySide6.QtWidgets import QApplication
 
-    import main
+    from rehab_service.desktop import app as main
 
     app = QApplication.instance() or QApplication([])
     w = main.MainWindow()
@@ -702,7 +702,7 @@ def test_ui_flow_count_and_summary():
 
 
 def test_qt_action_template_mapping():
-    import main
+    from rehab_service.desktop import app as main
 
     thread = main.CaptureThread()
     for cls in main.REGISTRY:
@@ -711,14 +711,16 @@ def test_qt_action_template_mapping():
 
 
 def test_abduction_main_and_server_show_same_counts():
-    import server
+    from rehab_service.api import rtc as server
+    from rehab_service.app import app
+    from rehab_service.services.training import TrainingSession
 
     _, window = _window()
     window.in_side.setCurrentIndex(1)
     window.goto_actions()
     window.start_action(FingerAbduction)
     window.start_running()
-    session = server.TrainingSession({"action": "abduction", "patient": {
+    session = TrainingSession({"action": "abduction", "patient": {
         "affected_side": "right", "forearm_cm": 25, "target_reps": 10,
     }})
     seq = (0.0,) * 6 + (35.0,) * 6 + (0.0,) * 6
@@ -735,7 +737,9 @@ def test_abduction_main_and_server_show_same_counts():
 
 
 def test_stretch_main_server_automatic_direction_without_mode_control():
-    import server
+    from rehab_service.api import rtc as server
+    from rehab_service.app import app
+    from rehab_service.services.training import TrainingSession
 
     _, window = _window()
     window.in_side.setCurrentIndex(1)
@@ -743,7 +747,7 @@ def test_stretch_main_server_automatic_direction_without_mode_control():
     window.start_action(FingerStretch)
     window.start_running()
     assert not hasattr(window, "cmb_mode")
-    session = server.TrainingSession({"action": "stretch", "mode": "flex", "patient": {
+    session = TrainingSession({"action": "stretch", "mode": "flex", "patient": {
         "affected_side": "right", "forearm_cm": 25, "target_reps": 3,
     }})
     for f in stretch_frames("ext", 175.0, 165.0, hold=1.0):
@@ -756,14 +760,16 @@ def test_stretch_main_server_automatic_direction_without_mode_control():
 
 
 def test_cup_main_server_show_same_pose_only_events():
-    import server
+    from rehab_service.api import rtc as server
+    from rehab_service.app import app
+    from rehab_service.services.training import TrainingSession
 
     _, window = _window()
     window.in_side.setCurrentIndex(1)
     window.goto_actions()
     window.start_action(CupTransfer)
     window.start_running()
-    session = server.TrainingSession({"action": "cup", "patient": {
+    session = TrainingSession({"action": "cup", "patient": {
         "affected_side": "right", "forearm_cm": 25, "target_reps": 10,
     }})
     for i, y in enumerate([700] * 10 + [590] * 10 + [700] * 10):

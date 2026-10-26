@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from inference import PoseEngine, detect_hands_by_half
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from rehab_service.recognition.inference import PoseEngine, detect_hands_by_half
 
 
 class FakeResult:
@@ -34,7 +34,7 @@ def test_cached_pose_uses_current_background():
     engine.hands = None
     engine.guidance_rois = {}
     engine.reset()
-    with patch("inference.detect_hands_by_half", return_value=[]):
+    with patch("rehab_service.recognition.inference.detect_hands_by_half", return_value=[]):
         first, _ = engine.process(np.zeros((48, 64, 3), dtype=np.uint8))
         second, _ = engine.process(np.full((48, 64, 3), 255, dtype=np.uint8))
     assert engine.model.calls == 1
@@ -114,7 +114,7 @@ def test_healthy_hand_alone_does_not_stop_affected_hand_search():
 
 
 def test_missing_affected_hand_is_not_invented():
-    from tracking import HandTracker
+    from rehab_service.recognition.tracking import HandTracker
 
     detector = CountingLandmarker(["Left", None])
     hands = detect_hands_by_half(detector, np.zeros((480, 640, 3), dtype=np.uint8),
@@ -146,14 +146,14 @@ def test_all_actions_request_only_the_hands_they_use():
             engine.device, engine.model, engine.hands = "cpu", FakeModel(), None
             engine.reset()
             engine.set_action_key(key, side)
-            with patch("inference.detect_hands_by_half", return_value=[]) as detect:
+            with patch("rehab_service.recognition.inference.detect_hands_by_half", return_value=[]) as detect:
                 engine.process(np.zeros((48, 64, 3), dtype=np.uint8))
             assert detect.call_args.kwargs["required_side"] == (
                 side if key in ("cup", "press", "abduction") else None), (key, side)
 
 
 def test_qt_passes_affected_side_to_shared_engine():
-    from main import CaptureThread
+    from rehab_service.desktop.app import CaptureThread
 
     thread = CaptureThread()
     thread.engine = SimpleNamespace(set_action_key=lambda key, side: calls.append((key, side)))
@@ -164,7 +164,7 @@ def test_qt_passes_affected_side_to_shared_engine():
 
 
 def test_hand_assignment_does_not_advance_tracking_state():
-    from tracking import HandTracker
+    from rehab_service.recognition.tracking import HandTracker
 
     tracker = HandTracker()
     hand = {"cat": "Left", "pts": np.zeros((21, 2))}

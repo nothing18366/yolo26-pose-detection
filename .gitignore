@@ -5,3 +5,17 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+data/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.egg-info/
+build/
+dist/

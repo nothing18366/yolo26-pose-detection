@@ -1,9 +1,10 @@
 """Parameters measured from the supplied standard demonstration videos."""
 
 import json
-from pathlib import Path
 
-ROOT = Path(__file__).parent
+from rehab_service.settings import TEMPLATE_DIR
+
+ROOT = TEMPLATE_DIR
 
 
 def load(name):

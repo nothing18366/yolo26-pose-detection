@@ -70,14 +70,6 @@ def line_angle(v1, v2):
     return min(a, 180.0 - a)
 
 
-def signed_angle(v1, v2):
-    """Signed 2-D angle from v1 to v2 in degrees (-180, 180)."""
-    a, b = unit(v1), unit(v2)
-    if np.linalg.norm(a) < 1e-6 or np.linalg.norm(b) < 1e-6:
-        return 0.0
-    return math.degrees(math.atan2(float(a[0] * b[1] - a[1] * b[0]), float(np.dot(a, b))))
-
-
 def dist(a, b):
     return float(np.linalg.norm(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)))
 
@@ -137,22 +129,6 @@ def hand_features(pts):
     tip_ratio = float(np.mean([dist(pts[i], palm) for i in FINGERTIPS]) / max(length, 1e-6))
     spread = float(np.mean([dist(pts[i], pts[j]) for i, j in ((8, 12), (12, 16), (16, 20))]) / max(length, 1e-6))
     return {"angles": angles, "curl": curl_metric(angles), "tip_ratio": tip_ratio, "spread": spread}
-
-
-def finger_extension_features(pts):
-    """Normalized thumb/index/four-finger distances for small hand motions."""
-    pts = np.asarray(pts, dtype=float)
-    palm = palm_center(pts)
-    scale = max(hand_length(pts), 1e-6)
-    return {
-        "thumb": float(np.linalg.norm(pts[4] - pts[5]) / scale),
-        "index": float(np.linalg.norm(pts[8] - pts[9]) / scale),
-        "middle": float(np.linalg.norm(pts[12] - pts[9]) / scale),
-        "ring": float(np.linalg.norm(pts[16] - pts[13]) / scale),
-        "pinky": float(np.linalg.norm(pts[20] - pts[17]) / scale),
-        "thumb_palm": float(np.linalg.norm(pts[4] - palm) / scale),
-        "index_palm": float(np.linalg.norm(pts[8] - palm) / scale),
-    }
 
 
 def isolated_finger_features(hand):
@@ -219,38 +195,11 @@ def stretch_features(affected, healthy, pose=None):
             "motion": motion}
 
 
-def roi_contains(point, roi, width, height, tolerance=0.0):
-    """Check a normalized [x0, y0, x1, y1] ROI against pixel coordinates."""
-    x0, y0, x1, y1 = roi
-    px, py = np.asarray(point, dtype=float)
-    tx, ty = tolerance * width, tolerance * height
-    return x0 * width - tx <= px <= x1 * width + tx and y0 * height - ty <= py <= y1 * height + ty
-
-
-def gesture_signature(pts, angles=None):
-    """Binary finger-open signature used by the video-defined gesture sequence."""
-    angles = angles or finger_angles(pts)
-    return tuple(int(angles[name]["pip"] >= 145.0 and angles[name]["mcp"] >= 145.0)
-                 for name in ("index", "middle", "ring", "pinky")) + (
-        int(np.linalg.norm(np.asarray(pts[4]) - np.asarray(pts[0])) > hand_length(pts) * 0.55),
-    )
-
-
 def hand_length(pts):
     pts = np.asarray(pts, dtype=float)
     wrist = pts[HAND_WRIST]
     mcp = np.mean([pts[FINGERS[f][0]] for f in FOUR], axis=0)
     return float(np.linalg.norm(mcp - wrist))
-
-
-def palm_normal_z(xyz):
-    """Signed 3D palm normal; used only to distinguish palm-up/down in action 3."""
-    if xyz is None or len(xyz) < 18:
-        return None
-    xyz = np.asarray(xyz, dtype=float)
-    a = xyz[5] - xyz[0]
-    b = xyz[17] - xyz[0]
-    return float(np.cross(a, b)[2])
 
 
 def forearm_axis(elbow, wrist):

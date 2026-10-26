@@ -1,44 +1,27 @@
-# yolo26-pose-detection
+# 康复动作识别服务
 
-偏瘫手康复训练动作计数原型，当前版本 `1.0.0`。本项目不用于临床评估或诊断。
+偏瘫手康复训练辅助原型，当前版本 1.0.0。提供六动作识别、Qt 桌面端，以及 Android 使用的账号、患者、计划、教学、记录和 FastAPI/WebRTC 服务。不用于临床评估或诊断。
 
-## 结构
+## 启动
 
-```text
-main.py              Qt 桌面入口
-server.py            Android 使用的 FastAPI/WebRTC 服务
-inference.py         Qt 与服务端共用的姿态和手部推理
-actions/             六个动作状态机及公共上下文
-metrics.py           关键点几何计算
-tracking.py          跨帧手部跟踪
-video_templates/     动作参数模板
-models/              YOLO 与 MediaPipe 模型
-tests/               回归测试
-tools/               视频回放和模板工具
-```
-
-## 运行
-
-安装桌面依赖后运行 `python main.py`。Android 服务依赖单独安装：
+在原推理环境、项目根目录运行：
 
 ```bash
 python -m pip install -r requirements-server.txt
 python server.py --host 0.0.0.0 --port 8000
 ```
 
-## 回归测试
+Qt 桌面端安装相应依赖后运行 `python main.py`。模型后台加载，业务接口可先使用；GET /health 的 model_loaded=true 才能训练。服务只允许一个活动训练客户端。
 
-```bash
-python tests/test_rehab.py
-python tests/test_inference.py
-python tests/test_server.py
-```
+## 结构与文档
 
-Android 协议和 Jetson 部署见 [服务端与 Android 联调](docs/服务端与Android联调.md)。动作规则、已验证结果和局限见[视频动作与阈值说明](docs/视频动作标准.md)。
+应用代码在 src/rehab_service，模型在 models，动作参数在 video_templates，公共教学在 media；data 为本地数据库，不提交 Git。
 
-## 工具
+- [结构与命名](docs/architecture.md)
+- [开发、测试与工具](docs/development.md)
+- [HTTP/WebRTC 协议](docs/api.md)
+- [部署、SMTP 与备份](docs/deployment.md)
+- [动作规则、验证结果和局限](docs/action_rules.md)
+- [尚未完成与实机验收](docs/remaining_work.md)
 
-```bash
-python tools/video_replay.py --video PATH --action fist --side left
-python tools/video_template_tool.py --video PATH --action rub --output video_templates/rub_hand_back.json
-```
+Android 工程独立维护，两端更新时需核对协议兼容。模型权重商业分发许可仍待确认。

@@ -13,16 +13,16 @@ from pathlib import Path
 import cv2
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
-from actions import (ActionContext, CupTransfer, FingerAbduction,
+from rehab_service.recognition.actions import (ActionContext, CupTransfer, FingerAbduction,
                       FingerPress, FingerStretch, FistOpenClose, RubBackOfHand)
-from inference import PoseEngine
+from rehab_service.recognition.inference import PoseEngine
 
 VIDEOS = {
-    "rub": Path("/Users/nothing/Desktop/偏瘫手康复操标准动作/摩擦手背.mp4"),
-    "fist": Path("/Users/nothing/Desktop/偏瘫手康复操标准动作/握拳伸展.mp4"),
-    "stretch": Path("/Users/nothing/Desktop/偏瘫手康复操标准动作/牵伸手指.mp4"),
+    "rub": ROOT / "media/rub.mp4",
+    "fist": ROOT / "media/fist.mp4",
+    "stretch": ROOT / "media/stretch.mp4",
 }
 CLASSES = {
     "rub": RubBackOfHand, "fist": FistOpenClose, "stretch": FingerStretch,

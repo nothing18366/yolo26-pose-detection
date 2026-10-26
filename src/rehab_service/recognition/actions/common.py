@@ -5,28 +5,23 @@
 
 import numpy as np
 
-from metrics import (
+from rehab_service.recognition.metrics import (
     ELBOW,
     FINGERS,
     FOUR,
     WRIST,
     curl_metric,
     dist,
-    finger_extension_features,
     fingers_closed,
     fingers_open,
-    fingertips,
     forearm_axis,
     line_angle,
-    local_frame,
-    roi_contains,
     project_local,
     hand_features,
     isolated_finger_features,
     stretch_features,
-    palm_center,
 )
-from video_templates import load as load_template
+from rehab_service.recognition.templates import load as load_template
 
 # ---- 阈值（动作标准原文） ----
 OPEN_DEG = 150.0        # 张开：四指 MCP/PIP 均 ≥150°
@@ -167,10 +162,6 @@ def tracking_guard(action, hands):
         return False
     action.tracking_state = "遮挡桥接" if "bridged" in states else "正常"
     return True
-
-
-def wrist_for(ctx, f, side):
-    return ctx.wrist_point if side == ctx.affected and ctx.wrist_point is not None else wrist_px(f, side)
 
 
 def hand_event_ok(duration, limits, drift=0.0, drift_limit=1.0):

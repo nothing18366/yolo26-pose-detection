@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rehab-service"
+dynamic = ["version"]
+requires-python = ">=3.10"
+description = "Rehabilitation action recognition and training service"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "rehab_service.version.__version__"}

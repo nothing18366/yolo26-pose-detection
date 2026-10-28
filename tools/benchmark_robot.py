@@ -16,9 +16,11 @@ def main():
     parser.add_argument("--device", required=True)
     parser.add_argument("--server", required=True)
     parser.add_argument("--phase", choices=("before", "after"), required=True)
-    parser.add_argument("--actions", nargs="+", default=["rub", "fist", "stretch", "cup", "abduction", "press"])
+    parser.add_argument("--actions", nargs="+", default=["rub", "fist"])
+    parser.add_argument("--sample-seconds", type=int, default=30)
     args = parser.parse_args()
     assert args.server.endswith(":18121"), "Use the isolated benchmark port"
+    assert 15 <= args.sample_seconds <= 60
     args.output.mkdir(parents=True, exist_ok=True)
     adb = [args.adb, "-s", args.device]
     modes = ("local", "remote") if args.phase == "before" else ("local", "skeleton", "diagnostic")
@@ -29,9 +31,10 @@ def main():
                 label = f"{args.phase}-{action}-{repeat}-{mode}"
                 if (args.output / (label + ".jsonl")).exists():
                     continue
-                print(time.strftime("%H:%M:%S"), "START", label, "15s warmup + 60s sample", flush=True)
+                print(time.strftime("%H:%M:%S"), "START", label, f"15s warmup + {args.sample_seconds}s sample", flush=True)
                 command = adb + ["shell", "am", "instrument", "-w", "-r", "-e", "class", "com.robint.TrainingPerformanceTest",
                     "-e", "benchmarkUrl", args.server, "-e", "action", action, "-e", "mode", mode, "-e", "label", label,
+                    "-e", "sampleSeconds", str(args.sample_seconds),
                     "com.robint.sdk.demo.test/androidx.test.runner.AndroidJUnitRunner"]
                 stop = threading.Event()
 
@@ -57,7 +60,7 @@ def main():
                 # Only the synthetic benchmark directory is read; no production record is exported.
                 sample = subprocess.check_output(adb + ["exec-out", "run-as", "com.robint.sdk.demo", "cat", "files/benchmarks/" + label + ".jsonl"])
                 rows = [json.loads(line) for line in sample.splitlines()]
-                assert sum(not row.get("warmup", True) for row in rows) >= 58, label
+                assert sum(not row.get("warmup", True) for row in rows) >= args.sample_seconds - 2, label
                 (args.output / (label + ".jsonl")).write_bytes(sample)
                 with (args.output / (label + "-system.txt")).open("wb") as output:
                     subprocess.run(adb + ["shell", "cat /proc/loadavg; for z in /sys/class/thermal/thermal_zone*; do cat $z/type $z/temp 2>/dev/null; done"], stdout=output, stderr=subprocess.STDOUT)

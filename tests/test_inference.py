@@ -173,15 +173,6 @@ def test_all_actions_request_only_the_hands_they_use():
                 side if key in ("cup", "press", "abduction") else None), (key, side)
 
 
-def test_qt_passes_affected_side_to_shared_engine():
-    from rehab_service.desktop.app import CaptureThread
-
-    thread = CaptureThread()
-    for key in ("cup", "press", "abduction", "rub", "fist", "stretch"):
-        thread.set_action_key(key, "right")
-        assert thread.selection[:2] == (key, "right") and thread.affected_side == "right"
-
-
 def test_hand_assignment_does_not_advance_tracking_state():
     from rehab_service.recognition.tracking import HandTracker
 

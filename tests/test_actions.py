@@ -1,14 +1,12 @@
-"""可运行自检：几何/角度 + 三个动作状态机 + Qt 界面联调（合成关键点，不需要摄像头）。
+"""可运行自检：几何/角度与六动作状态机（合成关键点，不需要摄像头）。
 
-运行：python tests/test_actions_ui.py
+运行：python tests/test_actions.py
 """
 
 import math
-import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # 无摄像头/无显示器也能跑界面联调
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
@@ -658,131 +656,6 @@ def test_press_counts_release_cycles_without_leaving_target():
         act.update(frame(t, None, [base])); t += .1
     act.update(frame(t, None, [base]))
     assert len(act.targets["a"]) == 4, act.targets
-
-
-
-# ---------------- Qt 界面联调（离屏） ----------------
-def _window():
-    from PySide6.QtWidgets import QApplication
-
-    from rehab_service.desktop import app as main
-
-    app = QApplication.instance() or QApplication([])
-    w = main.MainWindow()
-    return main, w
-
-
-def test_ui_flow_count_and_summary():
-    _app_module, w = _window()
-    w.in_name.setText("张三")
-    w.in_side.setCurrentIndex(1)          # 右侧患侧
-    w.in_forearm.setValue(25.0)
-    w.in_target.setValue(2)
-    w.goto_actions()
-    assert w.patient["side"] == "right" and w.patient["target_reps"] == 2
-
-    w.start_action(FistOpenClose)
-    assert w.stack.currentIndex() == 2
-    w.ctx.forearm_px = 300.0
-    w.start_running()
-    assert w.running
-
-    for t, is_open in [(0.0, True), (0.5, True), (0.9, False), (1.4, False), (2.0, True)]:
-        deg = (175.0, 175.0) if is_open else (80.0, 60.0)
-        w.on_metrics(frame(t, None, [hand_at("right", (600, 600), *deg), hand_at("left", (400, 600), *deg)]))
-
-    assert w.action.count == 1, w.action.reps
-    assert w.action.passed == 1, w.action.reps
-    assert w.lb_count.text() == "1" and w.lb_pass.text() == "1"
-
-    w.finish_running()
-    assert w.stack.currentIndex() == 3
-    assert w.sum_labels["count"].text() == "1"
-    assert w.sum_labels["rate"].text() == "100%"
-
-
-def test_qt_action_template_mapping():
-    from rehab_service.desktop import app as main
-
-    thread = main.CaptureThread()
-    for cls in main.REGISTRY:
-        thread.set_action_key(cls.key)
-        assert isinstance(thread.guidance_rois, dict), cls.key
-
-
-def test_abduction_main_and_server_show_same_counts():
-    from rehab_service.api import rtc as server
-    from rehab_service.app import app
-    from rehab_service.services.training import TrainingSession
-
-    _, window = _window()
-    window.in_side.setCurrentIndex(1)
-    window.goto_actions()
-    window.start_action(FingerAbduction)
-    window.start_running()
-    session = TrainingSession({"action": "abduction", "patient": {
-        "affected_side": "right", "forearm_cm": 25, "target_reps": 10,
-    }})
-    seq = (0.0,) * 6 + (35.0,) * 6 + (0.0,) * 6
-    for i, delta in enumerate(seq):
-        f = frame(i * .1, None, [_abduction_hand("thumb", delta)])
-        window.on_metrics(f)
-        status = session.update(f)
-    assert window.lb_count.text() == "1"
-    assert status["thumb_count"] == 1 and status["index_count"] == 0
-    window.finish_running()
-    assert window.sum_labels["count"].text() == "1"
-    assert session.summary()["count"] == 1
-    window.close()
-
-
-def test_stretch_main_server_automatic_direction_without_mode_control():
-    from rehab_service.api import rtc as server
-    from rehab_service.app import app
-    from rehab_service.services.training import TrainingSession
-
-    _, window = _window()
-    window.in_side.setCurrentIndex(1)
-    window.goto_actions()
-    window.start_action(FingerStretch)
-    window.start_running()
-    assert not hasattr(window, "cmb_mode")
-    session = TrainingSession({"action": "stretch", "mode": "flex", "patient": {
-        "affected_side": "right", "forearm_cm": 25, "target_reps": 3,
-    }})
-    for f in stretch_frames("ext", 175.0, 165.0, hold=1.0):
-        window.on_metrics(f)
-        status = session.update(f)
-    assert status["ext_count"] == len(window.action.modes["ext"]) == 1
-    assert status["flex_count"] == 0
-    assert session.action.mode == "ext" and window.action.mode == "ext"
-    window.close()
-
-
-def test_cup_main_server_show_same_pose_only_events():
-    from rehab_service.api import rtc as server
-    from rehab_service.app import app
-    from rehab_service.services.training import TrainingSession
-
-    _, window = _window()
-    window.in_side.setCurrentIndex(1)
-    window.goto_actions()
-    window.start_action(CupTransfer)
-    window.start_running()
-    session = TrainingSession({"action": "cup", "patient": {
-        "affected_side": "right", "forearm_cm": 25, "target_reps": 10,
-    }})
-    for i, y in enumerate([700] * 10 + [590] * 10 + [700] * 10):
-        f = frame(i * .1, cup_pose("right", y), [])
-        window.on_metrics(f)
-        status = session.update(f)
-    assert window.lb_count.text() == "2"
-    assert (status["lift_count"], status["place_count"]) == (1, 1)
-    assert (window.action.lift_count, window.action.place_count) == (1, 1)
-    window.finish_running()
-    assert window.sum_labels["detail"].text() == "端起 1 / 放下 1"
-    assert session.summary()["detail"] == "端起 1 / 放下 1"
-    window.close()
 
 
 def main():

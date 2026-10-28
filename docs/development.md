@@ -1,18 +1,17 @@
 # 开发与验证
 
-Python 3.10+，使用原推理环境。服务依赖在 requirements-server.txt；Qt 入口还需要 PySide6 和 OpenCV 图形支持。可选 `python -m pip install --no-deps -e .` 安装源码包，根入口与测试脚本也会定位 src/。本项目按完整源码目录部署，模型和媒体不包含在 Python wheel 中。
+Python 3.10+，使用原推理环境。服务依赖在 requirements-server.txt。可选 `python -m pip install --no-deps -e .` 安装源码包，根入口与测试脚本也会定位 src/。本项目按完整源码目录部署，模型和媒体不包含在 Python wheel 中。
 
 ```bash
-python main.py
 python server.py --host 0.0.0.0 --port 8000
 ```
 
 ## 回归
 
 ```bash
-python tests/test_actions_ui.py
+python tests/test_actions.py
 python tests/test_inference.py
-python tests/test_desktop_skeleton.py
+python tests/test_skeleton.py
 python tests/test_rtc.py
 python tests/test_business.py
 python tests/test_auth_schedule_feedback.py
@@ -22,9 +21,7 @@ python tests/test_teaching.py
 python tests/test_structure.py
 ```
 
-无显示设备运行 Qt 测试时设置 QT_QPA_PLATFORM=offscreen。业务/RTC 测试使用临时数据库和邮件传输替身，不连接正式患者库、不发送真实邮件。test_rtc.py 与 test_business_rtc.py 使用真实 ICE/视频/DataChannel 和假推理，验证协议、记录、占用、重复结束与令牌撤销。
-
-test_desktop_skeleton.py 使用合成图像检查镜像、比例留白、横竖图像、缩放和 300 ms 清除，并模拟慢推理确认原始预览继续更新、待处理帧只保留最新一张；同时检查切换动作丢弃旧结果及摄像头/模型异常释放。它不打开实体摄像头，不能代替 Qt 实机帧率与骨架滞后测量。
+业务/RTC 测试使用临时数据库和邮件传输替身，不连接正式患者库、不发送真实邮件。test_rtc.py 与 test_business_rtc.py 使用真实 ICE/视频/DataChannel 和假推理，验证协议、记录、占用、重复结束与令牌撤销。
 
 ## 工具
 

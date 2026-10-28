@@ -1,4 +1,4 @@
-"""Shared pose/hand inference used by the Qt app and network service."""
+"""Shared pose/hand inference used by the network service and replay tools."""
 
 import time
 

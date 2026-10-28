@@ -87,7 +87,9 @@ class RehabStore:
         fingerprint = checksum.hexdigest()[:16]
         # Exact display-only sources: all six fixed videos preserve keypoints and action results.
         return {"ded978947d4322d5": "989357def6b46bd9",
-                "e5c306b6a51c973b": "989357def6b46bd9"}.get(fingerprint, fingerprint)
+                "e5c306b6a51c973b": "989357def6b46bd9",
+                # Module description updated; inference implementation is byte-identical.
+                "13d97e8aaf1e6120": "989357def6b46bd9"}.get(fingerprint, fingerprint)
 
     @staticmethod
     def today():

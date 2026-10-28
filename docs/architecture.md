@@ -11,8 +11,6 @@ src/rehab_service/
   storage/               SQLite 访问及兼容迁移
   recognition/           共享推理、几何、手部跟踪、模板读取
     actions/             每个动作一个状态机，__init__.py 注册
-  desktop/app.py         Qt 界面、采集与最新帧推理线程
-  desktop/skeleton_view.py  Qt 本地原图与骨架绘制
 models/                  原始模型资产
 video_templates/         动作参数 JSON
 media/                   公共教学素材
@@ -20,11 +18,11 @@ tests/                   回归与联调测试
 tools/                   回放、素材生成、数据库备份
 ```
 
-根目录 main.py/server.py 只保留启动入口。HTTP 路由校验权限和参数后调用服务或存储；SQLite 事务保留在存储层。RTC 管理单客户端、视频队列和会话释放，调用共享推理引擎及 TrainingSession；动作状态机不依赖 HTTP、摄像头或数据库。
+根目录 server.py 只保留启动入口。HTTP 路由校验权限和参数后调用服务或存储；SQLite 事务保留在存储层。RTC 管理单客户端、视频队列和会话释放，调用共享推理引擎及 TrainingSession；动作状态机不依赖 HTTP、摄像头或数据库。
 
-services/auth.py 与 storage/database.py 的现有调用方式保留，未增加 Repository 接口或空层。Qt 与服务端复用同一 PoseEngine 和六动作注册表。
+services/auth.py 与 storage/database.py 的现有调用方式保留，未增加 Repository 接口或空层。服务端与回放工具复用同一 PoseEngine 和六动作注册表。
 
-Qt 摄像头持续输出原始视频，独立推理线程只取最新待处理帧。Qt 与 Android 复用 services/skeleton.py 的关键点格式，分别以 QPainter/Canvas 在显示端叠加骨架；推理与动作判定不读取显示坐标。Qt 不调用服务端视频回传接口，原推理标注绘制函数保留。
+Android 使用 services/skeleton.py 序列化的关键点，以 Canvas 在本地视频上叠加骨架；推理与动作判定不读取显示坐标。原推理标注绘制函数保留。
 
 ## 命名
 

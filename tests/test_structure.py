@@ -9,7 +9,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rehab_service.api import rtc
-from rehab_service.desktop import app as desktop
 from rehab_service.recognition.actions import REGISTRY
 from rehab_service.recognition.inference import PoseEngine, TEMPLATE_NAMES
 from rehab_service.recognition.templates import load
@@ -20,7 +19,6 @@ from rehab_service.storage import database
 class StructureTests(unittest.TestCase):
     def test_shared_engine_and_six_action_templates(self):
         self.assertIs(rtc.PoseEngine, PoseEngine)
-        self.assertIs(desktop.PoseEngine, PoseEngine)
         self.assertEqual([action.key for action in REGISTRY],
                          ["rub", "fist", "stretch", "cup", "abduction", "press"])
         for action in REGISTRY:

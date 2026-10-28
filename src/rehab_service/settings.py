@@ -1,4 +1,4 @@
-"""Paths shared by the service, desktop application and command-line tools."""
+"""Paths shared by the service and command-line tools."""
 
 from pathlib import Path
 

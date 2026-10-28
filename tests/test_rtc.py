@@ -19,7 +19,6 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 import rehab_service.recognition.inference as inference
-from rehab_service.desktop import app as main
 from rehab_service.api import rtc as server
 from rehab_service.app import app
 
@@ -179,7 +178,6 @@ async def test_webrtc(client, diagnostic=False):
 def test_service():
     server.engine = FakeEngine()
     server.active_client = None
-    assert main.PoseEngine is inference.PoseEngine
     assert server.PoseEngine is inference.PoseEngine
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"REHAB_DB": directory + "/db.sqlite3"}), TestClient(app) as client:
         assert client.post("/rtc/offer", json=offer_data("bad")).status_code == 401

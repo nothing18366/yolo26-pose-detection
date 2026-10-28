@@ -6,12 +6,13 @@
 
 import sys
 import time
+from threading import Condition
 
 import cv2
 import numpy as np
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QThread, Signal
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 from rehab_service.recognition.actions import REGISTRY, ActionContext, FingerStretch
 from rehab_service.recognition.inference import PoseEngine, TEMPLATE_NAMES
 from rehab_service.recognition.templates import load as load_template
+from rehab_service.desktop.skeleton_view import SkeletonVideoView
 
 
 def open_camera():
@@ -56,33 +58,19 @@ def open_camera():
     return None
 
 
-class CaptureThread(QThread):
+class CameraThread(QThread):
     frame = Signal(QImage)
-    metrics = Signal(dict)
     error = Signal(str)
 
     def __init__(self):
         super().__init__()
         self._running = True
-        self.action_key = None
-        self.affected_side = None
-        self.guidance_rois = {}
-        self.engine = None
-
-    def set_action_key(self, key, affected_side=None):
-        self.action_key = key
-        self.affected_side = affected_side
-        template_name = TEMPLATE_NAMES.get(key)
-        self.guidance_rois = load_template(template_name).get("guidance_rois", {}) if template_name else {}
-        if self.engine is not None:
-            self.engine.set_action_key(key, affected_side)
+        self._condition = Condition()
+        self._pending = None
 
     def run(self):
         cap = None
         try:
-            self.engine = PoseEngine()
-            if self.action_key:
-                self.engine.set_action_key(self.action_key, self.affected_side)
             cap = open_camera()
             if cap is None:
                 self.error.emit("没找到可用的摄像头，请检查 系统设置 → 隐私与安全性 → 摄像头 里的授权")
@@ -98,22 +86,89 @@ class CaptureThread(QThread):
                     time.sleep(0.05)
                     continue
                 misses = 0
-                canvas, frame = self.engine.process(img, time.monotonic())
+                captured_at = time.monotonic()
+                with self._condition:
+                    self._pending = (img, captured_at)
+                    self._condition.notify()
                 h, w = img.shape[:2]
-                rgb = cv2.cvtColor(cv2.flip(canvas, 1), cv2.COLOR_BGR2RGB)
+                rgb = cv2.cvtColor(cv2.flip(img, 1), cv2.COLOR_BGR2RGB)
                 self.frame.emit(QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy())
-                self.metrics.emit(frame)
         except Exception as e:
-            self.error.emit("摄像头或推理运行失败：%s" % e)
+            self.error.emit("摄像头运行失败：%s" % e)
         finally:
             if cap is not None:
                 cap.release()
+            with self._condition:
+                self._running = False
+                self._condition.notify()
+
+    def take_frame(self):
+        with self._condition:
+            self._condition.wait_for(lambda: self._pending is not None or not self._running)
+            frame, self._pending = self._pending, None
+            return frame if self._running else None
+
+    def stop(self):
+        with self._condition:
+            self._running = False
+            self._condition.notify()
+        self.wait()
+
+
+class CaptureThread(QThread):
+    frame = Signal(QImage)
+    metrics = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._running = True
+        self.action_key = None
+        self.affected_side = None
+        self.guidance_rois = {}
+        self.engine = None
+        self.selection = (None, None, 0)
+        self.camera = CameraThread()
+        self.camera.frame.connect(self.frame)
+        self.camera.error.connect(self.error)
+
+    def set_action_key(self, key, affected_side=None):
+        self.action_key = key
+        self.affected_side = affected_side
+        template_name = TEMPLATE_NAMES.get(key)
+        self.guidance_rois = load_template(template_name).get("guidance_rois", {}) if template_name else {}
+        self.selection = (key, affected_side, self.selection[2] + 1)
+
+    def run(self):
+        applied = None
+        self.camera.start()
+        try:
+            self.engine = PoseEngine()
+            while self._running:
+                captured = self.camera.take_frame()
+                if captured is None or not self._running:
+                    break
+                selection = self.selection
+                key, side, generation = selection
+                if key is not None and selection != applied:
+                    self.engine.set_action_key(key, side)
+                    applied = selection
+                img, captured_at = captured
+                _, frame = self.engine.process(img, captured_at, draw=False)
+                frame["desktop_generation"] = generation
+                if self._running:
+                    self.metrics.emit(frame)
+        except Exception as e:
+            self.error.emit("推理运行失败：%s" % e)
+        finally:
+            self.camera.stop()
             if self.engine is not None:
                 self.engine.close()
                 self.engine = None
 
     def stop(self):
         self._running = False
+        self.camera.stop()
         self.wait()
 
 
@@ -208,6 +263,7 @@ class MainWindow(QMainWindow):
         self.lb_hint.setText("确认患侧手和健侧手标签后，点“开始检测”")
         self.lb_position.setText("参考框仅用于引导，不限制检测")
         self.lb_live.setText("")
+        self.video.clear_pose()
         self.stack.setCurrentIndex(2)
 
     # ---------------- 页2 实时检测 ----------------
@@ -216,8 +272,7 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(page)
 
         left = QVBoxLayout()
-        self.video = QLabel("正在打开摄像头…")
-        self.video.setAlignment(Qt.AlignCenter)
+        self.video = SkeletonVideoView()
         self.video.setMinimumSize(820, 520)
         self.video.setStyleSheet("background:#111;color:#eee;font-size:16px")
         left.addWidget(self.video)
@@ -347,14 +402,16 @@ class MainWindow(QMainWindow):
         self.thread.start()
 
     def on_frame(self, qimg):
-        pm = QPixmap.fromImage(qimg)
-        self.video.setPixmap(pm.scaled(self.video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.video.set_frame(qimg)
 
     def on_error(self, msg):
         self.lb_hint.setText(msg)
-        self.video.setText(msg)
+        self.video.set_message(msg)
 
     def on_metrics(self, f):
+        if self.thread is not None and f.get("desktop_generation") != self.thread.selection[2]:
+            return
+        self.video.set_pose(f)
         if self.ctx:
             self.ctx.update_forearm(f["pose"])
         if self.ctx and self.ctx.forearm_px:

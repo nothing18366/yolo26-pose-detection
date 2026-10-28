@@ -177,11 +177,9 @@ def test_qt_passes_affected_side_to_shared_engine():
     from rehab_service.desktop.app import CaptureThread
 
     thread = CaptureThread()
-    thread.engine = SimpleNamespace(set_action_key=lambda key, side: calls.append((key, side)))
-    calls = []
     for key in ("cup", "press", "abduction", "rub", "fist", "stretch"):
         thread.set_action_key(key, "right")
-        assert calls[-1] == (key, "right") and thread.affected_side == "right"
+        assert thread.selection[:2] == (key, "right") and thread.affected_side == "right"
 
 
 def test_hand_assignment_does_not_advance_tracking_state():

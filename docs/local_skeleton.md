@@ -12,6 +12,12 @@
 
 普通模式不创建回传视频轨和发送任务，Android 不接收或解码回传视频。诊断只能在下一次训练前启用，当前训练不新增视频协商。
 
+## Qt 本地显示
+
+Qt 继续在本机推理，摄像头线程独立显示镜像原始视频；识别线程只处理最新待处理帧，调用 `PoseEngine.process(..., draw=False)`。UI 复用 `pose_message` 的归一化坐标与跟踪状态，在 `desktop/skeleton_view.py` 使用 QPainter 绘制骨架，等比例留白和镜像与原图一致。预测/桥接手点不显示，距采集时间超过 300 ms 的结果不绘制；切换动作立即清空旧骨架并丢弃旧动作结果。
+
+Qt 与 Android 使用各自原生绘图库，共用关键点格式和显示规则；Qt 不经过 Android 或 WebRTC。Qt 的相机分辨率设置保持原值，不随 Android 的 640×480 改动。原 `draw=True` 标注绘制路径保留给现有工具及需要标注图像的调用，本次未删除。
+
 ## 骨架协议
 
 客户端创建 `pose` DataChannel，`ordered=false, maxRetransmits=0`。服务端发现发送缓冲未清空时跳过本次骨架，避免排队。业务、停止、汇总与确认保留在可靠 `rehab` 通道。

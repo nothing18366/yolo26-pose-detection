@@ -182,8 +182,9 @@ class PoseEngine:
         self.frame_no = 0
         self.pose = None
         self.pose_result = None
+        self.pose_t = None
 
-    def process(self, img, timestamp=None):
+    def process(self, img, timestamp=None, *, draw=True):
         started = time.monotonic()
         t = started if timestamp is None else float(timestamp)
         self.frame_no += 1
@@ -192,6 +193,7 @@ class PoseEngine:
                 img, imgsz=IMGSZ, conf=0.5, verbose=False, device=self.device)[0]
             self.pose_result = result
             self.pose = result.keypoints.data[0].cpu().numpy() if len(result.keypoints.data) else None
+            self.pose_t = t
 
         h, w = img.shape[:2]
         hlist = detect_hands_by_half(
@@ -208,17 +210,19 @@ class PoseEngine:
             hand["wrist"] = hand["pts"][0].copy()
 
         draw_started = time.monotonic()
-        canvas = self.pose_result.plot(img=img.copy())
-        for hand in hlist:
-            if hand.get("state", "fresh") != "fresh":
-                continue
-            for link in HAND_LINKS:
-                cv2.line(canvas, tuple(hand["pts"][link.start].astype(int)),
-                         tuple(hand["pts"][link.end].astype(int)), HAND_LINE, 2)
-            for point in hand["pts"].astype(int):
-                cv2.circle(canvas, tuple(point), 3, HAND_DOT, -1)
+        canvas = img
+        if draw:
+            canvas = self.pose_result.plot(img=img.copy())
+            for hand in hlist:
+                if hand.get("state", "fresh") != "fresh":
+                    continue
+                for link in HAND_LINKS:
+                    cv2.line(canvas, tuple(hand["pts"][link.start].astype(int)),
+                             tuple(hand["pts"][link.end].astype(int)), HAND_LINE, 2)
+                for point in hand["pts"].astype(int):
+                    cv2.circle(canvas, tuple(point), 3, HAND_DOT, -1)
 
-        drawing_ms = (time.monotonic() - draw_started) * 1000.0
+        drawing_ms = (time.monotonic() - draw_started) * 1000.0 if draw else 0.0
         axis = None
         if self.pose is not None and len(self.pose) > 10:
             for _side, elbow_i, wrist_i in (("left", 7, 9), ("right", 8, 10)):
@@ -237,6 +241,7 @@ class PoseEngine:
         frame = {
             "t": t,
             "pose": self.pose,
+            "pose_t": self.pose_t,
             "hands": hlist,
             "frame_size": (w, h),
             "forearm_axis": axis,

@@ -59,6 +59,8 @@ def health():
         "business_api": "v1",
         "auth_required": True,
         "data_schema": 3,
+        "capabilities": {"local_skeleton_v1": True, "diagnostic_video": True,
+                         "diagnostic_png": True, "clock_sync_v1": True},
     }
 
 

@@ -42,6 +42,27 @@ def test_cached_pose_uses_current_background():
     assert second[0, 0, 0] == 255
 
 
+def test_disabling_drawing_preserves_metrics_and_input():
+    engines = []
+    for draw in (True, False):
+        engine = PoseEngine.__new__(PoseEngine)
+        engine.device, engine.model, engine.hands, engine.guidance_rois = "cpu", FakeModel(), None, {}
+        engine.reset()
+        image = np.full((48, 64, 3), 123, dtype=np.uint8)
+        with patch("rehab_service.recognition.inference.detect_hands_by_half", return_value=[]), \
+                patch.object(FakeResult, "plot", wraps=FakeResult().plot) as plot:
+            output, metrics = engine.process(image, 1.0, draw=draw)
+            assert plot.call_count == int(draw)
+            assert np.all(image == 123)
+            if not draw:
+                assert output is image and metrics["drawing_ms"] == 0
+        engines.append(metrics)
+    for key in ("processing_ms", "drawing_ms", "recognition_ms"):
+        for metrics in engines:
+            metrics.pop(key)
+    assert engines[0] == engines[1]
+
+
 def test_duplicate_hand_triggers_forearm_crop():
     class FakeLandmarker:
         def detect(self, image):

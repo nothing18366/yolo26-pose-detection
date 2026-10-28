@@ -11,7 +11,7 @@ from time import monotonic
 
 import numpy as np
 from av import VideoFrame
-from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc import RTCConfiguration, RTCDataChannel, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,8 +38,9 @@ class FakeEngine:
         self.action_key = key
         self.affected_side = affected_side
 
-    def process(self, image):
-        return image.copy(), {
+    def process(self, image, *, draw=True):
+        self.last_draw = draw
+        return np.full_like(image, 255), {
             "t": monotonic(),
             "pose": None,
             "hands": [],
@@ -78,10 +79,13 @@ def offer_data(sdp, action="fist"):
     }
 
 
-async def test_webrtc(client):
+async def test_webrtc(client, diagnostic=False):
     pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     datachannel = pc.createDataChannel("rehab")
     events = asyncio.Queue()
+    pose = pc.createDataChannel("pose", ordered=False, maxRetransmits=0)
+    poses = asyncio.Queue()
+    pose.on("message", lambda message: poses.put_nowait(json.loads(message)))
     received_video = asyncio.Event()
     pc.addTrack(TestVideoTrack())
 
@@ -104,6 +108,8 @@ async def test_webrtc(client):
         run = client.post("/api/v1/training-runs", json={"patient_id": patient["id"], "mode": "single", "action": "fist", "target_reps": 3}).json()
         client.put("/api/v1/training-runs/" + run["id"] + "/feedback/pre", json={"state": "skipped"})
         payload["session_id"] = client.post("/api/v1/sessions", json={"run_id": run["id"], "item_index": 0}).json()["id"]
+        if diagnostic:
+            payload["preview_mode"] = "diagnostic"
         response = await asyncio.to_thread(client.post, "/rtc/offer", json=payload)
         assert response.status_code == 200, response.text
         assert server.engine.action_key == "fist" and server.engine.affected_side == "left"
@@ -116,15 +122,48 @@ async def test_webrtc(client):
         assert result["type"] == "result"
         assert result["name"] == "动作2 握拳伸展"
         assert result["processing_ms"] == 1.25
-        await asyncio.wait_for(received_video.wait(), 10)
+        packet = await asyncio.wait_for(poses.get(), 10)
+        assert packet["session_id"] == payload["session_id"] and packet["seq"] > 0
+        assert packet["width"] == 320 and packet["height"] == 240
+        assert packet["completed_at_ms"] >= packet["decoded_at_ms"]
+        assert server.engine.last_draw is False
+        path = "/rtc/sessions/" + payload["session_id"] + "/frame.png"
+        if diagnostic:
+            await asyncio.wait_for(received_video.wait(), 10)
+            png = await asyncio.to_thread(client.get, path)
+            assert png.status_code == 200 and png.content.startswith(b"\x89PNG\r\n\x1a\n")
+            assert png.headers["cache-control"] == "no-store"
+            import cv2
+            assert not cv2.imdecode(np.frombuffer(png.content, dtype=np.uint8), cv2.IMREAD_COLOR).any()
+        else:
+            assert not received_video.is_set()
+            assert all(sender.track is None for sender in server.active_client.getSenders())
+            assert server.active_diagnostic is None
+            assert (await asyncio.to_thread(client.get, path)).status_code == 409
+        datachannel.send(json.dumps({"type": "clock_ping", "client_ms": 12345}))
+        while True:
+            pong = await asyncio.wait_for(events.get(), 10)
+            if pong["type"] == "clock_pong":
+                assert pong["client_ms"] == 12345 and pong["server_ms"] > 0
+                break
 
         busy = await asyncio.to_thread(client.post, "/rtc/offer", json=payload)
         assert busy.status_code == 409
-        datachannel.send(json.dumps({"type": "stop"}))
-        while True:
-            summary = await asyncio.wait_for(events.get(), 10)
-            if summary["type"] == "summary":
-                break
+        buffered = RTCDataChannel.bufferedAmount
+        # Simulate only pose congestion; reliable stop and summary must still complete.
+        with patch.object(RTCDataChannel, "bufferedAmount", property(
+                lambda channel: 16384 if channel.label == "pose" else buffered.fget(channel))):
+            async def wait_for_skip():
+                while True:
+                    update = await events.get()
+                    if update.get("skipped_pose", 0) > 0:
+                        return
+            await asyncio.wait_for(wait_for_skip(), 10)
+            datachannel.send(json.dumps({"type": "stop"}))
+            while True:
+                summary = await asyncio.wait_for(events.get(), 10)
+                if summary["type"] == "summary":
+                    break
         assert summary["count"] == 0
         datachannel.send(json.dumps({"type": "ack"}))
         for _ in range(20):
@@ -132,6 +171,7 @@ async def test_webrtc(client):
                 break
             await asyncio.sleep(0.1)
         assert server.active_client is None
+        assert (await asyncio.to_thread(client.get, path)).status_code == 409
     finally:
         await pc.close()
 
@@ -149,6 +189,7 @@ def test_service():
         assert client.post("/rtc/offer", json=offer_data("bad", action="unknown")).status_code == 400
         assert client.post("/rtc/offer", json=offer_data("bad")).status_code == 400
         asyncio.run(test_webrtc(client))
+        asyncio.run(test_webrtc(client, diagnostic=True))
 
 
 if __name__ == "__main__":

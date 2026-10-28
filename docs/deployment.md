@@ -12,7 +12,7 @@ python server.py --host 0.0.0.0 --port 8000
 curl http://127.0.0.1:8000/health
 ```
 
-部署需包含 `src/`、入口文件、`models/`、`video_templates/` 和完整 `media/`。路径以项目位置解析，不依赖启动工作目录。服务版本仍为 1.0.0，数据库 schema 为 3。
+部署需包含 `src/`、入口文件、`models/`、`video_templates/` 和完整 `media/`。路径以项目位置解析，不依赖启动工作目录。服务版本为 1.1.0，数据库 schema 保持 3。
 
 Android 使用主机可互访的局域网地址；模拟器访问本机通常为 `http://10.0.2.2:8000`。模型后台加载，`model_loaded=true` 才可识别；模型失败时认证、患者、计划和记录仍可用。`busy=true` 表示已有活动客户端。代码或教学素材修改后需要重启服务。不要增加 Uvicorn worker 数量共享当前单设备推理状态。
 
@@ -64,7 +64,9 @@ Jetson Orin Nano SUPER 上先核实 JetPack、Python、CUDA 与 NVIDIA PyTorch �
 
 还需实机验证 PyAV/aiortc、H.264 编解码负载、可写空间和 SMTP 出站。WebRTC 只使用 host ICE candidates，不配置 STUN/TURN，要求两端网络可互通。
 
-Android 采集 640×480、15 FPS；上传起始码率 1.5 Mbps、上限 2.5 Mbps，回传 H.264 起始 2 Mbps，拥塞控制可下调。本地/远端预览切换不停止识别。性能结论必须来自目标设备。
+Android 采集请求 640×480、15 FPS，实际相机可能更快；上传起始码率 1.5 Mbps、上限 2.5 Mbps。RK3588 保留软件 VP8，其他设备保留 H.264。普通模式只上传视频，返回关键点与业务数据；工作人员诊断才增加回传原图视频，回传 H.264 起始 2 Mbps，拥塞控制可下调。服务端两种 Android 模式均关闭标注绘制，Qt 默认保留绘制。
+
+更新后重启服务，并确认 `/health.capabilities.local_skeleton_v1=true`；旧进程不会自动加载新源码。新 App 在开始训练前检查能力，不支持时提示升级服务端。工作人员诊断和两端回滚见 [local_skeleton.md](local_skeleton.md)。
 
 ## 现场验收
 

@@ -30,12 +30,14 @@
 | GET `/api/v1/actions` | 六动作说明、封面、版本、files 各文件 sha256/bytes/url、review |
 | PATCH `/api/v1/actions/{key}/review` | 工作人员提交 `{content_version,state:"pending/approved/rejected",reviewer,note}`；版本不符返回 409 |
 
-`POST /rtc/offer` 必须带同一 Bearer 令牌及 `{type:"offer",sdp:"...",session_id:"..."}`。服务读取会话快照，不信任 offer 里的患者或次数覆盖。第二客户端返回 409。DataChannel 保持原 started/result/summary/error 字段，附带 session_id；发送 `{type:"stop"}` 正常结束，或 `{type:"stop",reason:"user_discomfort"}`。可靠保存、重复结束、ack 丢失释放和最新帧队列仍沿用现有实现。
+`POST /rtc/offer` 必须带同一 Bearer 令牌及 `{type:"offer",sdp:"...",session_id:"...",preview_mode:"keypoints"}`。`preview_mode` 默认 keypoints，仅上传视频；diagnostic 仅允许工作人员，并协商回传解码原图视频，权限检查先于占用训练名额。服务读取会话快照，不信任 offer 里的患者或次数覆盖。第二客户端返回 409。可靠 `rehab` 通道保持 started/result/summary/error 字段，附带 session_id；发送 `{type:"stop"}` 正常结束，或 `{type:"stop",reason:"user_discomfort"}`。可靠保存、重复结束、ack 丢失释放和最新帧队列仍沿用现有实现。
+
+`GET /health` 增加 capabilities：local_skeleton_v1、clock_sync_v1、diagnostic_video、diagnostic_png。`GET /rtc/sessions/{id}/frame.png` 仅工作人员、仅当前诊断会话可取当前已解码帧，响应 image/png、Cache-Control: no-store，不在服务端落盘；无当前诊断图像返回 409。骨架与时钟消息见 [local_skeleton.md](local_skeleton.md)。
 
 
 ## 训练与结果语义
 
-- 动作 key 固定为 `rub/fist/stretch/cup/abduction/press`，DataChannel 名称为 `rehab`。
+- 动作 key 固定为 `rub/fist/stretch/cup/abduction/press`；业务 DataChannel 为可靠 `rehab`，骨架使用独立无序、零重传的 `pose`。
 - 会话状态为 `pending/connecting/running/completed/interrupted`；整次训练状态为 `active/completed/unfinished/interrupted`。`completed` 表示正常结束，是否达到目标通过 `target_reached` 判断。
 - 准备页只开本地预览；倒计时完成后建立 RTC，首帧处理时开始计时。中断后不能继续旧计数，新训练建立新会话。
 - `elapsed_seconds` 是首帧至结束的真实经过时间，休息不计入；`summary.total` 是已识别动作累计时长，`summary.avg` 是单次动作平均时长。完成为零时页面显示暂无判定。

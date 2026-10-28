@@ -8,13 +8,14 @@ import os
 import time
 from pathlib import Path
 
-from av import VideoFrame
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCRtpSender, RTCSessionDescription, VideoStreamTrack
 from aiortc.codecs import h264
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 
 from rehab_service.storage.database import now
-from rehab_service.services.auth import current_user, session_access
+from rehab_service.services.auth import current_user, session_access, staff
+from rehab_service.services.skeleton import pose_message
 from rehab_service.services.training import TrainingSession
 from rehab_service.recognition.inference import PoseEngine
 
@@ -24,6 +25,7 @@ active_client = None
 model_error = None
 model_task = None
 active_cleanup = None
+active_diagnostic = None
 offer_lock = asyncio.Lock()
 
 # aiortc 1.14.0 has no public per-sender bitrate setter. This sets only the
@@ -79,9 +81,31 @@ class LatestVideoTrack(VideoStreamTrack):
         return await self.frames.get()
 
 
+@router.get("/rtc/sessions/{identity}/frame.png")
+async def diagnostic_frame(identity: str, request: Request):
+    user = await asyncio.to_thread(current_user, request)
+    staff(user)
+    await asyncio.to_thread(session_access, request, user, identity)
+    diagnostic = active_diagnostic
+    if diagnostic is None or diagnostic["session_id"] != identity or diagnostic["frame"] is None:
+        raise HTTPException(409, "当前会话未开启远端诊断或尚未收到图像")
+
+    def encode(frame):
+        import cv2
+        ok, png = cv2.imencode(".png", frame.to_ndarray(format="bgr24"))
+        if not ok:
+            raise RuntimeError("PNG 编码失败")
+        return png.tobytes()
+
+    png = await asyncio.to_thread(encode, diagnostic["frame"])
+    if active_diagnostic is not diagnostic:
+        raise HTTPException(409, "诊断会话已结束")
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
 @router.post("/rtc/offer")
 async def offer(request: Request):
-    global active_client, active_cleanup
+    global active_client, active_cleanup, active_diagnostic
     app = request.app
     user = await asyncio.to_thread(current_user, request)
     if engine is None:
@@ -90,6 +114,12 @@ async def offer(request: Request):
         payload = await request.json()
         if not isinstance(payload, dict) or payload.get("type") != "offer" or not payload.get("sdp"):
             raise ValueError("需要 SDP offer")
+        preview_mode = payload.get("preview_mode", "keypoints")
+        if preview_mode not in ("keypoints", "diagnostic"):
+            raise ValueError("不支持的显示模式")
+        diagnostic = preview_mode == "diagnostic"
+        if diagnostic:
+            staff(user)
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not 1 <= len(session_id) <= 64:
             raise ValueError("需要已登录用户创建的 session_id，请升级客户端")
@@ -105,16 +135,19 @@ async def offer(request: Request):
             await asyncio.to_thread(app.state.store.claim_session, session_id)
         pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         active_client = pc
+        active_diagnostic = {"session_id": session_id, "frame": None} if diagnostic else None
         app.state.active_session_id = session_id
     tasks = []
     channel = None
+    pose_channel = None
     closing = False
     pending = None
     frame_ready = asyncio.Event()
-    outgoing = LatestVideoTrack()
+    outgoing = LatestVideoTrack() if diagnostic else None
     dropped_input = 0
     decoded_total = 0
     processed_total = 0
+    skipped_pose = 0
     processed_frames = 0
     fps_started = time.monotonic()
     processed_fps = 0.0
@@ -130,9 +163,12 @@ async def offer(request: Request):
     checkpoint_task = None
     performance = None
     if os.environ.get("REHAB_PERFORMANCE_DIR"):
-        directory = Path(os.environ["REHAB_PERFORMANCE_DIR"])
-        directory.mkdir(parents=True, exist_ok=True)
-        performance = (directory / (session_id + ".jsonl")).open("a", buffering=1)
+        try:
+            directory = Path(os.environ["REHAB_PERFORMANCE_DIR"])
+            directory.mkdir(parents=True, exist_ok=True)
+            performance = (directory / (session_id + ".jsonl")).open("a", buffering=1)
+        except OSError:
+            logging.exception("性能采样文件不可写，训练继续")
 
     def with_identity(data):
         if session_id:
@@ -165,7 +201,7 @@ async def offer(request: Request):
 
     async def close_session(reason="disconnected"):
         nonlocal closing
-        global active_client, active_cleanup
+        global active_client, active_cleanup, active_diagnostic
         if closing:
             return
         closing = True
@@ -190,6 +226,7 @@ async def offer(request: Request):
                 if performance is not None:
                     performance.close()
                 active_client = None
+                active_diagnostic = None
                 active_cleanup = None
                 app.state.active_session_id = None
 
@@ -223,7 +260,9 @@ async def offer(request: Request):
                 decoded_total += 1
                 if pending is not None:
                     dropped_input += 1
-                pending = frame
+                pending = (frame, time.monotonic() * 1000)
+                if diagnostic and active_diagnostic is not None:
+                    active_diagnostic["frame"] = frame
                 frame_ready.set()
         except asyncio.CancelledError:
             pass
@@ -231,14 +270,14 @@ async def offer(request: Request):
             await close_session()
 
     async def process_video():
-        nonlocal pending, processed_frames, processed_total, fps_started, processed_fps, worker_task
+        nonlocal pending, processed_frames, processed_total, fps_started, processed_fps, worker_task, skipped_pose, performance
         nonlocal started_at, started_clock, last_checkpoint, checkpoint_task
         try:
             while not closing and not stopping:
                 await frame_ready.wait()
                 if closing or stopping:
                     return
-                frame = pending
+                frame, decoded_ms = pending
                 pending = None
                 frame_ready.clear()
                 async with process_lock:
@@ -248,8 +287,8 @@ async def offer(request: Request):
                     if started_at is None:
                         started_at, started_clock = now(), started
                     image = frame.to_ndarray(format="bgr24")
-                    worker_task = asyncio.create_task(asyncio.to_thread(engine.process, image))
-                    annotated, metrics = await asyncio.shield(worker_task)
+                    worker_task = asyncio.create_task(asyncio.to_thread(engine.process, image, draw=False))
+                    _, metrics = await asyncio.shield(worker_task)
                     worker_task = None
                     result = session.update(metrics)
                     if session_id and started - last_checkpoint >= 1 and (checkpoint_task is None or checkpoint_task.done()):
@@ -270,20 +309,32 @@ async def offer(request: Request):
                     "server_total_ms": (time.monotonic() - started) * 1000,
                     "processed_fps": processed_fps,
                     "dropped_input": dropped_input,
-                    "dropped_output": outgoing.dropped,
+                    "dropped_output": outgoing.dropped if outgoing is not None else 0,
                     "decoded_frames_total": decoded_total,
                     "processed_frames_total": processed_total,
                     "recognition_ms": metrics.get("recognition_ms"),
                     "drawing_ms": metrics.get("drawing_ms"),
+                    "preview_mode": preview_mode,
+                    "skipped_pose": skipped_pose,
                 })
                 if performance is not None:
-                    performance.write(json.dumps(dict(result, sampled_at=time.time())) + "\n")
-                annotated_frame = VideoFrame.from_ndarray(annotated, format="bgr24")
-                annotated_frame.pts = frame.pts
-                annotated_frame.time_base = frame.time_base
-                outgoing.push(annotated_frame)
+                    try:
+                        performance.write(json.dumps(dict(result, sampled_at=time.time())) + "\n")
+                    except OSError:
+                        logging.exception("性能采样写入失败，训练继续")
+                        performance.close()
+                        performance = None
+                if outgoing is not None:
+                    outgoing.push(frame)
                 if started_sent:
                     send(result)
+                    if pose_channel is not None and pose_channel.readyState == "open":
+                        if pose_channel.bufferedAmount == 0:
+                            packet = pose_message(metrics, session_id, processed_total, decoded_ms,
+                                                  time.monotonic() * 1000)
+                            pose_channel.send(json.dumps(packet, separators=(",", ":"), allow_nan=False))
+                        else:
+                            skipped_pose += 1
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -297,7 +348,14 @@ async def offer(request: Request):
 
     @pc.on("datachannel")
     def on_datachannel(datachannel):
-        nonlocal channel, started_sent
+        nonlocal channel, pose_channel, started_sent
+        if datachannel.label == "pose":
+            if datachannel.ordered or datachannel.maxRetransmits != 0:
+                datachannel.close()
+                tasks.append(asyncio.create_task(close_session("protocol_error")))
+            else:
+                pose_channel = datachannel
+            return
         if datachannel.label != "rehab":
             return
         channel = datachannel
@@ -313,6 +371,7 @@ async def offer(request: Request):
                 "action": session.action.key,
                 "name": session.action.name,
                 "target": session.ctx.target_reps,
+                "preview_mode": preview_mode,
             })
 
         if channel.readyState == "open":
@@ -329,7 +388,11 @@ async def offer(request: Request):
             except (ValueError, AttributeError):
                 send({"type": "error", "message": "消息格式错误"})
                 return
-            if kind == "stop":
+            if kind == "clock_ping":
+                client_ms = command.get("client_ms")
+                if isinstance(client_ms, (int, float)) and not isinstance(client_ms, bool) and 0 <= client_ms < 1e15:
+                    send({"type": "clock_pong", "client_ms": client_ms, "server_ms": time.monotonic() * 1000})
+            elif kind == "stop":
                 reason = command.get("reason", "manual")
                 if reason not in ("manual", "user_discomfort"):
                     send({"type": "error", "message": "结束原因错误"})
@@ -349,7 +412,8 @@ async def offer(request: Request):
     def on_track(track):
         if track.kind != "video":
             return
-        pc.addTrack(outgoing)
+        if outgoing is not None:
+            pc.addTrack(outgoing)
         tasks.extend((asyncio.create_task(read_video(track)), asyncio.create_task(process_video())))
 
         @track.on("ended")

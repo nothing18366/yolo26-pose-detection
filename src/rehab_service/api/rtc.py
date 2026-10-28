@@ -348,6 +348,8 @@ async def offer(request: Request):
         await pc.setRemoteDescription(RTCSessionDescription(sdp=payload["sdp"], type="offer"))
         if not any(transceiver.kind == "video" for transceiver in pc.getTransceivers()):
             raise ValueError("offer 中没有视频轨")
+        # The Android client selects H.264 on phones and software VP8 on the
+        # RK3588 robot; keep both codecs available for negotiation.
         codecs = RTCRtpSender.getCapabilities("video").codecs
         preferred = sorted(codecs, key=lambda codec: codec.mimeType.lower() != "video/h264")
         for transceiver in pc.getTransceivers():

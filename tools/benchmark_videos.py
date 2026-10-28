@@ -54,7 +54,9 @@ def main():
                     output.write(json.dumps({"index": index, "input_sha256": hashlib.sha256(frame).hexdigest(),
                         "t": metrics["t"], "pose": metrics["pose"], "hands": metrics["hands"],
                         "frame_size": metrics["frame_size"], "result": result,
-                        "processing_ms": metrics["processing_ms"], "drawing_ms": metrics.get("drawing_ms")},
+                        "processing_ms": metrics["processing_ms"], "drawing_ms": metrics.get("drawing_ms"),
+                        "recognition": {name: metrics.get(name) for name in (
+                            "pose_inferred", "pose_inference_ms", "hand_detection_ms", "tracking_ms", "display_hands")}},
                         ensure_ascii=False, default=lambda value: value.tolist()) + "\n")
                     index += 1
             capture.release()

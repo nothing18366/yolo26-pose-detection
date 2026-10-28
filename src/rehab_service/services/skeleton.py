@@ -34,6 +34,6 @@ def pose_message(metrics, session_id, sequence, decoded_ms, completed_ms):
             "confidence": None,
             "points": points(hand["pts"], 21) if hand.get("state", "fresh") == "fresh"
                       and not hand.get("predicted") else None,
-        } for hand in metrics.get("hands", [])],
+        } for hand in metrics.get("display_hands", metrics.get("hands", []))],
         "tracking_confidence": metrics.get("tracking_confidence", 0.0),
     }

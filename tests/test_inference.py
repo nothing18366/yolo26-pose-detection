@@ -57,10 +57,49 @@ def test_disabling_drawing_preserves_metrics_and_input():
             if not draw:
                 assert output is image and metrics["drawing_ms"] == 0
         engines.append(metrics)
-    for key in ("processing_ms", "drawing_ms", "recognition_ms"):
+    for key in ("processing_ms", "drawing_ms", "recognition_ms", "pose_inference_ms",
+                "hand_detection_ms", "tracking_ms"):
         for metrics in engines:
             metrics.pop(key)
     assert engines[0] == engines[1]
+
+
+def test_display_points_do_not_change_smoothed_action_or_tracker_points():
+    engine = PoseEngine.__new__(PoseEngine)
+    engine.device, engine.model, engine.hands, engine.guidance_rois = "cpu", FakeModel(), None, {}
+    engine.reset()
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    for t, x, expected in ((1.0, 100., 100.), (1.1, 300., 170.)):
+        detected = np.tile([x, 100.], (21, 1))
+        with patch("rehab_service.recognition.inference.detect_hands_by_half",
+                   return_value=[{"side": "right", "pts": detected}]):
+            _, metrics = engine.process(image, t, draw=False)
+        action_hand, display_hand = metrics["hands"][0], metrics["display_hands"][0]
+        np.testing.assert_allclose(action_hand["pts"], np.tile([expected, 100.], (21, 1)))
+        np.testing.assert_array_equal(display_hand["pts"], detected)
+        assert not np.shares_memory(display_hand["pts"], action_hand["pts"])
+        display_hand["pts"][:] = 0
+        np.testing.assert_array_equal(engine.tracker.last["right"]["pts"], action_hand["pts"])
+        np.testing.assert_allclose(action_hand["wrist"], [expected, 100.])
+    with patch("rehab_service.recognition.inference.detect_hands_by_half", return_value=[]):
+        _, missing = engine.process(image, 1.2, draw=False)
+    assert missing["display_hands"][0]["state"] == "bridged"
+    assert missing["display_hands"][0]["predicted"] is True
+
+
+def test_stage_timings_distinguish_pose_refresh_from_cached_pose():
+    engine = PoseEngine.__new__(PoseEngine)
+    engine.device, engine.model, engine.hands, engine.guidance_rois = "cpu", FakeModel(), None, {}
+    engine.reset()
+    with patch("rehab_service.recognition.inference.detect_hands_by_half", return_value=[]):
+        frames = [engine.process(np.zeros((48, 64, 3), dtype=np.uint8), t, draw=False)[1]
+                  for t in (1.0, 1.1)]
+    assert frames[0]["pose_inferred"] is True and frames[1]["pose_inferred"] is False
+    assert frames[1]["pose_inference_ms"] == 0
+    for frame in frames:
+        stages = [frame[key] for key in ("pose_inference_ms", "hand_detection_ms", "tracking_ms")]
+        assert all(value >= 0 for value in stages)
+        assert sum(stages) <= frame["processing_ms"]
 
 
 def test_duplicate_hand_triggers_forearm_crop():

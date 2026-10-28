@@ -188,20 +188,27 @@ class PoseEngine:
         started = time.monotonic()
         t = started if timestamp is None else float(timestamp)
         self.frame_no += 1
-        if self.pose_result is None or self.frame_no % POSE_EVERY_N_FRAMES == 1:
+        pose_inferred = self.pose_result is None or self.frame_no % POSE_EVERY_N_FRAMES == 1
+        if pose_inferred:
             result = self.model.predict(
                 img, imgsz=IMGSZ, conf=0.5, verbose=False, device=self.device)[0]
             self.pose_result = result
             self.pose = result.keypoints.data[0].cpu().numpy() if len(result.keypoints.data) else None
             self.pose_t = t
 
+        pose_finished = time.monotonic()
         h, w = img.shape[:2]
         hlist = detect_hands_by_half(
             self.hands, img, self.tracker.last, self.guidance_rois, self.pose,
             wrist_crops=getattr(self, "action_key", None) == "abduction",
             required_side=(getattr(self, "affected_side", None)
                            if getattr(self, "action_key", None) in ("cup", "press", "abduction") else None))
+        hand_finished = time.monotonic()
         hlist = self.tracker.update(hlist, t, self.pose, w)
+        # Copy before smoothing; display points must never feed back into action or tracking state.
+        display_hands = [{"side": hand["side"], "state": hand.get("state", "fresh"),
+                          "predicted": bool(hand.get("predicted")), "pts": hand["pts"].copy()}
+                         for hand in hlist]
         for hand in hlist:
             if hand.get("state", "fresh") == "fresh":
                 hand["pts"] = self.smooth[hand["side"]].update(hand["pts"])
@@ -242,7 +249,9 @@ class PoseEngine:
             "t": t,
             "pose": self.pose,
             "pose_t": self.pose_t,
+            "pose_inferred": pose_inferred,
             "hands": hlist,
+            "display_hands": display_hands,
             "frame_size": (w, h),
             "forearm_axis": axis,
             "hand_tracking": hand_tracking,
@@ -250,6 +259,9 @@ class PoseEngine:
             "processing_ms": (time.monotonic() - started) * 1000.0,
             "drawing_ms": drawing_ms,
             "recognition_ms": (draw_started - started) * 1000.0,
+            "pose_inference_ms": (pose_finished - started) * 1000.0 if pose_inferred else 0.0,
+            "hand_detection_ms": (hand_finished - pose_finished) * 1000.0,
+            "tracking_ms": (draw_started - hand_finished) * 1000.0,
         }
         return canvas, frame
 

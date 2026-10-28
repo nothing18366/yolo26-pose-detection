@@ -34,6 +34,8 @@
 
 `GET /health` 增加 capabilities：local_skeleton_v1、clock_sync_v1、diagnostic_video、diagnostic_png。`GET /rtc/sessions/{id}/frame.png` 仅工作人员、仅当前诊断会话可取当前已解码帧，响应 image/png、Cache-Control: no-store，不在服务端落盘；无当前诊断图像返回 409。骨架与时钟消息见 [local_skeleton.md](local_skeleton.md)。
 
+`result` 另含 `body_fps/left_hand_fps/right_hand_fps` 与对应 `*_updates_total`，用于区分新检测更新率与视频帧率；`pose_inferred/pose_inference_ms/hand_detection_ms/tracking_ms` 提供最近帧分段耗时。它们只用于诊断和可选性能采样，不进入训练汇总或患者数据库；口径见 [local_skeleton.md](local_skeleton.md)。
+
 
 ## 训练与结果语义
 

@@ -37,6 +37,7 @@ def compare_videos(before, after):
             for row in (a, b):
                 row.pop("processing_ms", None)
                 row.pop("drawing_ms", None)
+                row.pop("recognition", None)  # Display coordinates and timings are not action input.
             same(a, b, key + ".frame" + str(a["index"]))
         a, b = (json.loads((directory / (key + "-summary.json")).read_text()) for directory in (before, after))
         for row in (a, b):
@@ -88,12 +89,15 @@ def summarize(root):
                 server = root / ("server-" + phase) / (identity + ".jsonl")
                 if server.exists():
                     frames = [row for row in rows(server) if start <= row["sampled_at"] <= end]
-                    for key in ("processing_ms", "drawing_ms", "recognition_ms", "server_total_ms"):
+                    for key in ("processing_ms", "drawing_ms", "recognition_ms", "server_total_ms",
+                                "pose_inference_ms", "hand_detection_ms", "tracking_ms",
+                                "body_fps", "left_hand_fps", "right_hand_fps"):
                         metrics["server_frame_" + key] = distribution([row.get(key) for row in frames])
                     if len(frames) > 1:
                         metrics["server_window_fps"] = distribution([
                             (len(frames) - 1) / (frames[-1]["sampled_at"] - frames[0]["sampled_at"])])
-                        for key in ("dropped_input", "dropped_output", "skipped_pose", "decoded_frames_total", "processed_frames_total"):
+                        for key in ("dropped_input", "dropped_output", "skipped_pose", "decoded_frames_total", "processed_frames_total",
+                                    "body_updates_total", "left_hand_updates_total", "right_hand_updates_total"):
                             if key in frames[0]:
                                 metrics[key + "_increment"] = distribution([frames[-1][key] - frames[0][key]])
                         dropped = frames[-1]["dropped_input"] - frames[0]["dropped_input"]

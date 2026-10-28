@@ -151,6 +151,9 @@ async def offer(request: Request):
     processed_frames = 0
     fps_started = time.monotonic()
     processed_fps = 0.0
+    keypoint_frames = {"body": 0, "left_hand": 0, "right_hand": 0}
+    keypoint_totals = dict(keypoint_frames)
+    keypoint_fps = dict.fromkeys(keypoint_frames, 0.0)
     stopping = False
     started_sent = False
     worker_task = None
@@ -286,6 +289,7 @@ async def offer(request: Request):
                     started = time.monotonic()
                     if started_at is None:
                         started_at, started_clock = now(), started
+                        fps_started = started
                     image = frame.to_ndarray(format="bgr24")
                     worker_task = asyncio.create_task(asyncio.to_thread(engine.process, image, draw=False))
                     _, metrics = await asyncio.shield(worker_task)
@@ -300,9 +304,19 @@ async def offer(request: Request):
                         last_checkpoint = started
                 processed_frames += 1
                 processed_total += 1
+                fresh_hands = {hand["side"] for hand in metrics.get("display_hands", metrics.get("hands", []))
+                               if hand.get("state", "fresh") == "fresh" and not hand.get("predicted")}
+                updates = {"body": metrics.get("pose") is not None and bool(metrics.get("pose_inferred")),
+                           "left_hand": "left" in fresh_hands, "right_hand": "right" in fresh_hands}
+                for name, fresh in updates.items():
+                    keypoint_frames[name] += int(fresh)
+                    keypoint_totals[name] += int(fresh)
                 elapsed = time.monotonic() - fps_started
                 if elapsed >= 1:
                     processed_fps = processed_frames / elapsed
+                    for name in keypoint_frames:
+                        keypoint_fps[name] = keypoint_frames[name] / elapsed
+                        keypoint_frames[name] = 0
                     processed_frames = 0
                     fps_started = time.monotonic()
                 result.update({
@@ -314,9 +328,16 @@ async def offer(request: Request):
                     "processed_frames_total": processed_total,
                     "recognition_ms": metrics.get("recognition_ms"),
                     "drawing_ms": metrics.get("drawing_ms"),
+                    "pose_inferred": bool(metrics.get("pose_inferred")),
+                    "pose_inference_ms": metrics.get("pose_inference_ms"),
+                    "hand_detection_ms": metrics.get("hand_detection_ms"),
+                    "tracking_ms": metrics.get("tracking_ms"),
                     "preview_mode": preview_mode,
                     "skipped_pose": skipped_pose,
                 })
+                for name in keypoint_frames:
+                    result[name + "_fps"] = keypoint_fps[name]
+                    result[name + "_updates_total"] = keypoint_totals[name]
                 if performance is not None:
                     try:
                         performance.write(json.dumps(dict(result, sampled_at=time.time())) + "\n")

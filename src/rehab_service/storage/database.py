@@ -89,7 +89,9 @@ class RehabStore:
         return {"ded978947d4322d5": "989357def6b46bd9",
                 "e5c306b6a51c973b": "989357def6b46bd9",
                 # Module description updated; inference implementation is byte-identical.
-                "13d97e8aaf1e6120": "989357def6b46bd9"}.get(fingerprint, fingerprint)
+                "13d97e8aaf1e6120": "989357def6b46bd9",
+                # Raw display copies and phase timings: all six fixed videos preserve action input.
+                "8e6ee66d91a76ff3": "989357def6b46bd9"}.get(fingerprint, fingerprint)
 
     @staticmethod
     def today():

@@ -55,7 +55,23 @@ def test_diagnostic_requires_staff_before_claiming_a_slot():
         assert rtc.active_client is None
 
 
+def test_pose_prefers_raw_display_points_and_rejects_predicted_display_hands():
+    action_hand = {"side": "right", "state": "fresh", "pts": np.tile([64., 48.], (21, 1))}
+    display_hand = {**action_hand, "pts": np.tile([320., 240.], (21, 1))}
+    metrics = {"pose": None, "hands": [action_hand], "display_hands": [display_hand],
+               "frame_size": (640, 480), "t": 1.}
+    packet = pose_message(metrics, "session", 1, 1000., 1050.)
+    assert packet["hands"][0]["points"][0] == [.5, .5]
+    np.testing.assert_array_equal(action_hand["pts"][0], [64., 48.])
+    for state, predicted in (("bridged", True), ("fresh", True), ("lost", False)):
+        display_hand.update(state=state, predicted=predicted)
+        assert pose_message(metrics, "session", 2, 1000., 1050.)["hands"][0]["points"] is None
+    metrics["display_hands"] = []
+    assert pose_message(metrics, "session", 3, 1000., 1050.)["hands"] == []
+
+
 if __name__ == "__main__":
     test_pose_is_normalized_and_never_promotes_predicted_hands()
+    test_pose_prefers_raw_display_points_and_rejects_predicted_display_hands()
     test_diagnostic_requires_staff_before_claiming_a_slot()
     print("PASS skeleton serialization and diagnostic permissions")

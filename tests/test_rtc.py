@@ -63,6 +63,28 @@ class TestVideoTrack(VideoStreamTrack):
         return frame
 
 
+class LandmarkEngine(FakeEngine):
+    def reset(self):
+        super().reset()
+        self.frames = 0
+
+    def process(self, image, *, draw=True):
+        output, metrics = super().process(image, draw=draw)
+        self.frames += 1
+        refreshed = self.frames % 2 == 1
+        fresh_hand = self.frames % 3 == 1
+        metrics.update({"pose": np.tile([160., 120., .9], (17, 1)),
+                        "pose_inferred": refreshed, "pose_t": metrics["t"] if refreshed else metrics["t"] - 1,
+                        "pose_inference_ms": .2 if refreshed else 0., "hand_detection_ms": .6, "tracking_ms": .1,
+                        # Keep display fixtures out of the fake action's input.
+                        "display_hands": [
+                            {"side": "left", "state": "fresh" if fresh_hand else "bridged",
+                             "predicted": not fresh_hand, "pts": np.tile([64., 48.], (21, 1))},
+                            {"side": "right", "state": "fresh", "predicted": True,
+                             "pts": np.tile([64., 48.], (21, 1))}]})
+        return output, metrics
+
+
 def offer_data(sdp, action="fist"):
     return {
         "type": "offer",
@@ -121,6 +143,15 @@ async def test_webrtc(client, diagnostic=False):
         assert result["type"] == "result"
         assert result["name"] == "动作2 握拳伸展"
         assert result["processing_ms"] == 1.25
+        while result["processed_fps"] == 0:
+            result = await asyncio.wait_for(events.get(), 10)
+        count = result["processed_frames_total"]
+        assert result["body_updates_total"] == (count + 1) // 2
+        assert result["left_hand_updates_total"] == (count + 2) // 3
+        assert result["right_hand_updates_total"] == 0
+        assert 0 < result["left_hand_fps"] < result["body_fps"] < result["processed_fps"]
+        assert result["right_hand_fps"] == 0
+        assert result["hand_detection_ms"] == .6 and result["tracking_ms"] == .1
         packet = await asyncio.wait_for(poses.get(), 10)
         assert packet["session_id"] == payload["session_id"] and packet["seq"] > 0
         assert packet["width"] == 320 and packet["height"] == 240
@@ -176,7 +207,7 @@ async def test_webrtc(client, diagnostic=False):
 
 
 def test_service():
-    server.engine = FakeEngine()
+    server.engine = LandmarkEngine()
     server.active_client = None
     assert server.PoseEngine is inference.PoseEngine
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"REHAB_DB": directory + "/db.sqlite3"}), TestClient(app) as client:

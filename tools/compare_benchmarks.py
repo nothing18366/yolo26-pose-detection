@@ -58,10 +58,10 @@ def distribution(values):
 
 def summarize(root):
     output = []
-    for phase in ("before", "after"):
+    for phase, series in (("before", "robot-before"), ("after", "robot-after"), ("after", "robot-after-retest")):
         renderer = root / ("renderer-" + phase + ".log")
         renderer_lines = renderer.read_text(errors="replace").splitlines() if renderer.exists() else []
-        for file in sorted((root / ("robot-" + phase)).glob("*.jsonl")):
+        for file in sorted((root / series).glob("*.jsonl")):
             if "-system" in file.stem:
                 continue
             all_rows = rows(file)
@@ -75,6 +75,13 @@ def summarize(root):
             end = max(row["wall_time_ms"] for row in samples) / 1000
             metrics = {key: distribution([row.get(key) for row in samples]) for key in samples[0]
                        if key not in ("monotonic_ms", "wall_time_ms", "warmup")}
+            for key in ("draw_cpu_ms", "decoded_to_draw_ms"):
+                metrics["skeleton_" + key] = distribution([value for row in samples
+                    for value in row.get("skeleton", {}).get(key, [])])
+            for key in ("updates_total", "timeouts_total", "draws_total"):
+                values = [row.get("skeleton", {}).get(key) for row in samples]
+                values = [value for value in values if isinstance(value, (int, float))]
+                metrics["skeleton_" + key + "_increment"] = distribution([values[-1] - values[0]]) if len(values) > 1 else None
             saved = next((row["run"] for row in all_rows if row.get("type") == "saved_run"), None)
             if saved and saved.get("sessions"):
                 identity = saved["sessions"][0]["id"]
@@ -84,6 +91,11 @@ def summarize(root):
                     for key in ("processing_ms", "drawing_ms", "recognition_ms", "server_total_ms"):
                         metrics["server_frame_" + key] = distribution([row.get(key) for row in frames])
                     if len(frames) > 1:
+                        metrics["server_window_fps"] = distribution([
+                            (len(frames) - 1) / (frames[-1]["sampled_at"] - frames[0]["sampled_at"])])
+                        for key in ("dropped_input", "dropped_output", "skipped_pose", "decoded_frames_total", "processed_frames_total"):
+                            if key in frames[0]:
+                                metrics[key + "_increment"] = distribution([frames[-1][key] - frames[0][key]])
                         dropped = frames[-1]["dropped_input"] - frames[0]["dropped_input"]
                         decoded = frames[-1]["decoded_frames_total"] - frames[0]["decoded_frames_total"]
                         metrics["intentional_input_drop_fraction"] = distribution([dropped / decoded]) if decoded else None
@@ -112,7 +124,7 @@ def summarize(root):
                     if match and start + 4 <= float(match[1]) <= end:
                         rendered.append(float(match[2]))
                 metrics[view + "_render_fps"] = distribution(rendered)
-            output.append({"label": file.stem, "phase": phase, "action": samples[0]["action"],
+            output.append({"label": file.stem, "series": series, "phase": phase, "action": samples[0]["action"],
                            "mode": samples[0]["mode"], "samples": len(samples), "metrics": metrics})
     return output
 
@@ -127,11 +139,11 @@ def main():
     (args.root / "summary.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
     with (args.root / "metrics.csv").open("w") as output:
         writer = csv.writer(output)
-        writer.writerow(["label", "metric", "samples", "median", "p95", "min", "max"])
+        writer.writerow(["series", "label", "metric", "samples", "median", "p95", "min", "max"])
         for run in result["robot_runs"]:
             for key, value in run["metrics"].items():
                 if value:
-                    writer.writerow([run["label"], key] + [value[k] for k in ("samples", "median", "p95", "min", "max")])
+                    writer.writerow([run["series"], run["label"], key] + [value[k] for k in ("samples", "median", "p95", "min", "max")])
     print(len(result["robot_runs"]), "robot runs summarized")
     if "algorithm_comparison" in result:
         print("All six actions match at fixed frames/timestamps (absolute tolerance 1e-6).")

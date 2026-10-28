@@ -4,7 +4,9 @@ import asyncio
 import copy
 import json
 import logging
+import os
 import time
+from pathlib import Path
 
 from av import VideoFrame
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCRtpSender, RTCSessionDescription, VideoStreamTrack
@@ -111,6 +113,8 @@ async def offer(request: Request):
     frame_ready = asyncio.Event()
     outgoing = LatestVideoTrack()
     dropped_input = 0
+    decoded_total = 0
+    processed_total = 0
     processed_frames = 0
     fps_started = time.monotonic()
     processed_fps = 0.0
@@ -124,6 +128,11 @@ async def offer(request: Request):
     started_clock = None
     last_checkpoint = 0.0
     checkpoint_task = None
+    performance = None
+    if os.environ.get("REHAB_PERFORMANCE_DIR"):
+        directory = Path(os.environ["REHAB_PERFORMANCE_DIR"])
+        directory.mkdir(parents=True, exist_ok=True)
+        performance = (directory / (session_id + ".jsonl")).open("a", buffering=1)
 
     def with_identity(data):
         if session_id:
@@ -178,6 +187,8 @@ async def offer(request: Request):
             await pc.close()
         finally:
             if active_client is pc:
+                if performance is not None:
+                    performance.close()
                 active_client = None
                 active_cleanup = None
                 app.state.active_session_id = None
@@ -205,10 +216,11 @@ async def offer(request: Request):
                 return
 
     async def read_video(track):
-        nonlocal pending, dropped_input
+        nonlocal pending, dropped_input, decoded_total
         try:
             while not closing and not stopping:
                 frame = await track.recv()
+                decoded_total += 1
                 if pending is not None:
                     dropped_input += 1
                 pending = frame
@@ -219,7 +231,7 @@ async def offer(request: Request):
             await close_session()
 
     async def process_video():
-        nonlocal pending, processed_frames, fps_started, processed_fps, worker_task
+        nonlocal pending, processed_frames, processed_total, fps_started, processed_fps, worker_task
         nonlocal started_at, started_clock, last_checkpoint, checkpoint_task
         try:
             while not closing and not stopping:
@@ -248,6 +260,7 @@ async def offer(request: Request):
                             app.state.store.checkpoint, session_id, snapshot, started - started_clock, started_at))
                         last_checkpoint = started
                 processed_frames += 1
+                processed_total += 1
                 elapsed = time.monotonic() - fps_started
                 if elapsed >= 1:
                     processed_fps = processed_frames / elapsed
@@ -258,7 +271,13 @@ async def offer(request: Request):
                     "processed_fps": processed_fps,
                     "dropped_input": dropped_input,
                     "dropped_output": outgoing.dropped,
+                    "decoded_frames_total": decoded_total,
+                    "processed_frames_total": processed_total,
+                    "recognition_ms": metrics.get("recognition_ms"),
+                    "drawing_ms": metrics.get("drawing_ms"),
                 })
+                if performance is not None:
+                    performance.write(json.dumps(dict(result, sampled_at=time.time())) + "\n")
                 annotated_frame = VideoFrame.from_ndarray(annotated, format="bgr24")
                 annotated_frame.pts = frame.pts
                 annotated_frame.time_base = frame.time_base

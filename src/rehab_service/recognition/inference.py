@@ -207,6 +207,7 @@ class PoseEngine:
             hand["palm"] = palm_center(hand["pts"])
             hand["wrist"] = hand["pts"][0].copy()
 
+        draw_started = time.monotonic()
         canvas = self.pose_result.plot(img=img.copy())
         for hand in hlist:
             if hand.get("state", "fresh") != "fresh":
@@ -217,6 +218,7 @@ class PoseEngine:
             for point in hand["pts"].astype(int):
                 cv2.circle(canvas, tuple(point), 3, HAND_DOT, -1)
 
+        drawing_ms = (time.monotonic() - draw_started) * 1000.0
         axis = None
         if self.pose is not None and len(self.pose) > 10:
             for _side, elbow_i, wrist_i in (("left", 7, 9), ("right", 8, 10)):
@@ -241,6 +243,8 @@ class PoseEngine:
             "hand_tracking": hand_tracking,
             "tracking_confidence": sum(hand.get("state", "fresh") == "fresh" for hand in hlist) / 2.0,
             "processing_ms": (time.monotonic() - started) * 1000.0,
+            "drawing_ms": drawing_ms,
+            "recognition_ms": (draw_started - started) * 1000.0,
         }
         return canvas, frame
 

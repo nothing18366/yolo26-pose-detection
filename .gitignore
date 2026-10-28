@@ -19,3 +19,4 @@ data/
 *.egg-info/
 build/
 dist/
+artifacts/

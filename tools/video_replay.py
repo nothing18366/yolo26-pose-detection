@@ -15,8 +15,7 @@ import cv2
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from rehab_service.recognition.actions import (ActionContext, CupTransfer, FingerAbduction,
-                      FingerPress, FingerStretch, FistOpenClose, RubBackOfHand)
+from rehab_service.recognition.actions import ActionContext, REGISTRY
 from rehab_service.recognition.inference import PoseEngine
 
 VIDEOS = {
@@ -24,10 +23,7 @@ VIDEOS = {
     "fist": ROOT / "media/fist.mp4",
     "stretch": ROOT / "media/stretch.mp4",
 }
-CLASSES = {
-    "rub": RubBackOfHand, "fist": FistOpenClose, "stretch": FingerStretch,
-    "cup": CupTransfer, "abduction": FingerAbduction, "press": FingerPress,
-}
+CLASSES = {action.key: action for action in REGISTRY}
 
 
 def main():

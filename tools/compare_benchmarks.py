@@ -5,7 +5,6 @@ import csv
 import json
 import math
 from pathlib import Path
-import re
 import statistics
 
 
@@ -57,79 +56,71 @@ def distribution(values):
             "p95": values[lo] + (values[hi] - values[lo]) * (position - lo), "min": values[0], "max": values[-1]}
 
 
+
 def summarize(root):
     output = []
-    for phase, series in (("before", "robot-before"), ("after", "robot-after"), ("after", "robot-after-retest")):
-        renderer = root / ("renderer-" + phase + ".log")
-        renderer_lines = renderer.read_text(errors="replace").splitlines() if renderer.exists() else []
-        for file in sorted((root / series).glob("*.jsonl")):
-            if "-system" in file.stem:
-                continue
-            all_rows = rows(file)
-            samples = [row for row in all_rows if row.get("warmup") is False]
-            if not samples:
-                continue
-            # The user shortened the protocol; use the same first 30s after warmup in long runs.
-            first_at = min(row["wall_time_ms"] for row in samples)
-            samples = [row for row in samples if row["wall_time_ms"] < first_at + 30000]
-            start = min(row["wall_time_ms"] for row in samples) / 1000
-            end = max(row["wall_time_ms"] for row in samples) / 1000
-            metrics = {key: distribution([row.get(key) for row in samples]) for key in samples[0]
-                       if key not in ("monotonic_ms", "wall_time_ms", "warmup")}
-            for key in ("draw_cpu_ms", "decoded_to_draw_ms"):
-                metrics["skeleton_" + key] = distribution([value for row in samples
-                    for value in row.get("skeleton", {}).get(key, [])])
-            for key in ("updates_total", "timeouts_total", "draws_total"):
-                values = [row.get("skeleton", {}).get(key) for row in samples]
-                values = [value for value in values if isinstance(value, (int, float))]
-                metrics["skeleton_" + key + "_increment"] = distribution([values[-1] - values[0]]) if len(values) > 1 else None
-            saved = next((row["run"] for row in all_rows if row.get("type") == "saved_run"), None)
-            if saved and saved.get("sessions"):
-                identity = saved["sessions"][0]["id"]
-                server = root / ("server-" + phase) / (identity + ".jsonl")
-                if server.exists():
-                    frames = [row for row in rows(server) if start <= row["sampled_at"] <= end]
-                    for key in ("processing_ms", "drawing_ms", "recognition_ms", "server_total_ms",
-                                "pose_inference_ms", "hand_detection_ms", "tracking_ms",
-                                "body_fps", "left_hand_fps", "right_hand_fps"):
-                        metrics["server_frame_" + key] = distribution([row.get(key) for row in frames])
-                    if len(frames) > 1:
-                        metrics["server_window_fps"] = distribution([
-                            (len(frames) - 1) / (frames[-1]["sampled_at"] - frames[0]["sampled_at"])])
-                        for key in ("dropped_input", "dropped_output", "skipped_pose", "decoded_frames_total", "processed_frames_total",
-                                    "body_updates_total", "left_hand_updates_total", "right_hand_updates_total"):
-                            if key in frames[0]:
-                                metrics[key + "_increment"] = distribution([frames[-1][key] - frames[0][key]])
-                        dropped = frames[-1]["dropped_input"] - frames[0]["dropped_input"]
-                        decoded = frames[-1]["decoded_frames_total"] - frames[0]["decoded_frames_total"]
-                        metrics["intentional_input_drop_fraction"] = distribution([dropped / decoded]) if decoded else None
-            system = file.with_name(file.stem + "-system.jsonl")
-            thermal = {}
-            if system.exists():
-                for row in rows(system):
-                    if not start <= row["wall_time"] <= end:
-                        continue
-                    lines = row["raw"].strip().splitlines()
-                    if not lines:
-                        continue
-                    try:
-                        thermal.setdefault("system_load_1m", []).append(float(lines[0].split()[0]))
-                        for index in range(1, len(lines) - 1, 2):
-                            thermal.setdefault("temperature_c_" + lines[index], []).append(float(lines[index + 1]) / 1000)
-                    except ValueError:
-                        pass
-                metrics.update({key: distribution(value) for key, value in thermal.items()})
-            for view in ("local", "remote"):
-                rendered = []
-                for line in renderer_lines:
-                    if "EglRenderer: training_" + view not in line:
-                        continue
-                    match = re.search(r"^\s*(\d+\.\d+).* Render fps: (\d*\.\d+)", line)
-                    if match and start + 4 <= float(match[1]) <= end:
-                        rendered.append(float(match[2]))
-                metrics[view + "_render_fps"] = distribution(rendered)
-            output.append({"label": file.stem, "series": series, "phase": phase, "action": samples[0]["action"],
-                           "mode": samples[0]["mode"], "samples": len(samples), "metrics": metrics})
+    for file in sorted((root / "robot").glob("*.jsonl")):
+        if "-system" in file.stem:
+            continue
+        all_rows = rows(file)
+        samples = [row for row in all_rows if row.get("warmup") is False]
+        if not samples:
+            continue
+        start = samples[0]["wall_time_ms"] / 1000 - samples[0].get("sample_seconds", 1)
+        end = max(row["wall_time_ms"] for row in samples) / 1000
+        metrics = {key: distribution([row.get(key) for row in samples]) for key in samples[0]
+                   if key not in ("monotonic_ms", "wall_time_ms", "warmup")}
+        for key in ("draw_cpu_ms", "decoded_to_draw_ms"):
+            metrics["skeleton_" + key] = distribution([value for row in samples
+                for value in row.get("skeleton", {}).get(key, [])])
+        pipeline = [record for row in samples for record in row.get("skeleton", {}).get("pipeline", [])]
+        for key in ("parse_ms", "ui_queue_ms", "render_wait_ms", "return_estimate_ms", "decoded_to_first_draw_ms"):
+            metrics["pipeline_" + key] = distribution([record.get(key) for record in pipeline])
+        for key in ("updates_total", "timeouts_total", "draws_total"):
+            values = [row.get("skeleton", {}).get(key) for row in samples]
+            values = [value for value in values if isinstance(value, (int, float))]
+            metrics["skeleton_" + key + "_increment"] = distribution([values[-1] - values[0]]) if len(values) > 1 else None
+        saved = next((row["run"] for row in all_rows if row.get("type") == "saved_run"), None)
+        if saved and saved.get("sessions"):
+            identity = saved["sessions"][0]["id"]
+            server = root / "server" / (identity + ".jsonl")
+            if server.exists():
+                frames = [row for row in rows(server) if start <= row["sampled_at"] <= end]
+                for key in ("processing_ms", "drawing_ms", "recognition_ms", "server_total_ms",
+                            "pose_inference_ms", "hand_detection_ms", "tracking_ms",
+                            "body_fps", "left_hand_fps", "right_hand_fps", "hand_full_detections", "hand_crop_detections"):
+                    metrics["server_frame_" + key] = distribution([row.get(key) for row in frames])
+                for key in ("input_wait_ms", "image_conversion_ms", "worker_wait_ms", "inference_ms",
+                            "result_ms", "result_to_send_ms", "pose_send_call_ms"):
+                    metrics["server_timing_" + key] = distribution([row.get("timing", {}).get(key) for row in frames])
+                if len(frames) > 1:
+                    metrics["server_window_fps"] = distribution([
+                        (len(frames) - 1) / (frames[-1]["sampled_at"] - frames[0]["sampled_at"])])
+                    for key in ("dropped_input", "dropped_output", "skipped_pose", "decoded_frames_total", "processed_frames_total",
+                                "body_updates_total", "left_hand_updates_total", "right_hand_updates_total"):
+                        if key in frames[0]:
+                            metrics[key + "_increment"] = distribution([frames[-1][key] - frames[0][key]])
+                    dropped = frames[-1]["dropped_input"] - frames[0]["dropped_input"]
+                    decoded = frames[-1]["decoded_frames_total"] - frames[0]["decoded_frames_total"]
+                    metrics["intentional_input_drop_fraction"] = distribution([dropped / decoded]) if decoded else None
+        system = file.with_name(file.stem + "-system.jsonl")
+        thermal = {}
+        if system.exists():
+            for row in rows(system):
+                if not start <= row["wall_time"] <= end:
+                    continue
+                lines = row["raw"].strip().splitlines()
+                if not lines:
+                    continue
+                try:
+                    thermal.setdefault("system_load_1m", []).append(float(lines[0].split()[0]))
+                    for index in range(1, len(lines) - 1, 2):
+                        thermal.setdefault("temperature_c_" + lines[index], []).append(float(lines[index + 1]) / 1000)
+                except ValueError:
+                    pass
+            metrics.update({key: distribution(value) for key, value in thermal.items()})
+        output.append({"label": file.stem, "action": samples[0]["action"],
+                       "mode": samples[0]["mode"], "samples": len(samples), "metrics": metrics})
     return output
 
 
@@ -137,17 +128,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     args = parser.parse_args()
-    result = {"effective_window_seconds": 30, "robot_runs": summarize(args.root)}
+    result = {"robot_runs": summarize(args.root)}
     if (args.root / "videos-after").exists():
         result["algorithm_comparison"] = compare_videos(args.root / "videos-before", args.root / "videos-after")
     (args.root / "summary.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
     with (args.root / "metrics.csv").open("w") as output:
         writer = csv.writer(output)
-        writer.writerow(["series", "label", "metric", "samples", "median", "p95", "min", "max"])
+        writer.writerow(["label", "metric", "samples", "median", "p95", "min", "max"])
         for run in result["robot_runs"]:
             for key, value in run["metrics"].items():
                 if value:
-                    writer.writerow([run["series"], run["label"], key] + [value[k] for k in ("samples", "median", "p95", "min", "max")])
+                    writer.writerow([run["label"], key] + [value[k] for k in ("samples", "median", "p95", "min", "max")])
     print(len(result["robot_runs"]), "robot runs summarized")
     if "algorithm_comparison" in result:
         print("All six actions match at fixed frames/timestamps (absolute tolerance 1e-6).")

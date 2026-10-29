@@ -20,11 +20,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--no-draw", action="store_true")
+    parser.add_argument("--actions", nargs="+", choices=("rub", "fist", "stretch", "cup", "abduction", "press"),
+                        default=["rub", "fist", "stretch", "cup", "abduction", "press"])
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     engine = PoseEngine()
     try:
-        for key in ("rub", "fist", "stretch", "cup", "abduction", "press"):
+        for key in args.actions:
             source = ROOT / "media" / (key + ".mp4")
             capture = cv2.VideoCapture(str(source))
             assert capture.isOpened(), source
@@ -56,7 +58,8 @@ def main():
                         "frame_size": metrics["frame_size"], "result": result,
                         "processing_ms": metrics["processing_ms"], "drawing_ms": metrics.get("drawing_ms"),
                         "recognition": {name: metrics.get(name) for name in (
-                            "pose_inferred", "pose_inference_ms", "hand_detection_ms", "tracking_ms", "display_hands")}},
+                            "pose_inferred", "pose_inference_ms", "hand_detection_ms", "tracking_ms", "display_hands",
+                            "hand_full_detections", "hand_crop_detections")}},
                         ensure_ascii=False, default=lambda value: value.tolist()) + "\n")
                     index += 1
             capture.release()

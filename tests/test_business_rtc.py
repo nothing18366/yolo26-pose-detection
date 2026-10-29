@@ -23,7 +23,7 @@ async def wait_for(events, kind):
             return item
 
 
-async def exercise(client, action, interrupted=False, acknowledge=True, discomfort=False, revoked=False):
+async def exercise(client, action, interrupted=False, acknowledge=True, discomfort=False, revoked=False, preview_mode="keypoints"):
     response = client.post("/api/v1/patients", json={"name": "联调患者", "affected_side": "right", "forearm_cm": 25})
     patient = response.json()
     run = client.post("/api/v1/training-runs", json={"patient_id": patient["id"], "mode": "single", "action": action, "target_reps": 8}).json()
@@ -40,7 +40,7 @@ async def exercise(client, action, interrupted=False, acknowledge=True, discomfo
 
     try:
         await pc.setLocalDescription(await pc.createOffer())
-        offer = {"type": "offer", "sdp": pc.localDescription.sdp, "session_id": session["id"]}
+        offer = {"type": "offer", "sdp": pc.localDescription.sdp, "session_id": session["id"], "preview_mode": preview_mode}
         response = await asyncio.to_thread(client.post, "/rtc/offer", json=offer)
         assert response.status_code == 200, response.text
         answer = response.json()
@@ -99,9 +99,9 @@ def test_durable_rtc():
             for index, action in enumerate(("rub", "fist", "stretch", "cup", "abduction", "press")):
                 asyncio.run(exercise(client, action, interrupted=action == "cup", acknowledge=action != "press"))
                 print("PASS durable RTC", action, flush=True)
-            asyncio.run(exercise(client, "cup", discomfort=True))
+            asyncio.run(exercise(client, "cup", discomfort=True, preview_mode="annotated"))
             print("PASS discomfort RTC", flush=True)
-            asyncio.run(exercise(client, "cup", revoked=True))
+            asyncio.run(exercise(client, "cup", revoked=True, preview_mode="annotated"))
             print("PASS revoked RTC", flush=True)
 
 

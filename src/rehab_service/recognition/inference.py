@@ -1,6 +1,7 @@
 """Shared pose/hand inference used by the network service and replay tools."""
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import mediapipe as mp
@@ -32,13 +33,23 @@ TEMPLATE_NAMES = {
 }
 
 
+def _detect_hand_frame(landmarker, img):
+    started = time.monotonic()
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+    result = landmarker.detect(image)
+    return result, (time.monotonic() - started) * 1000.0
+
+
 def detect_hands_by_half(landmarker, img, previous_hands=None, guidance_rois=None, pose=None, wrist_crops=False,
-                         required_side=None):
+                         required_side=None, initial_detection=None, detection_stats=None):
     """Retry only until the action's required hands have been found."""
     h, w = img.shape[:2]
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     assignment = HandTracker()
     assignment.last = previous_hands or {}
+    if detection_stats is not None:
+        detection_stats.update(hand_full_detections=0, hand_crop_detections=0)
 
     def complete(hands):
         if required_side is None:
@@ -58,6 +69,8 @@ def detect_hands_by_half(landmarker, img, previous_hands=None, guidance_rois=Non
         return out
 
     def detect(crop, x0=0, y0=0):
+        if detection_stats is not None:
+            detection_stats["hand_crop_detections"] += 1
         ch, cw = crop.shape[:2]
         det = landmarker.detect(mp.Image(
             image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(crop)))
@@ -84,7 +97,9 @@ def detect_hands_by_half(landmarker, img, previous_hands=None, guidance_rois=Non
                     result.append(hand)
         return result
 
-    result = convert(landmarker.detect(mp.Image(
+    if detection_stats is not None:
+        detection_stats["hand_full_detections"] += 1
+    result = convert(initial_detection if initial_detection is not None else landmarker.detect(mp.Image(
         image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))))
     duplicate = None
     if len(result) == 2:
@@ -159,6 +174,7 @@ class PoseEngine:
         self.hands = vision.HandLandmarker.create_from_options(
             vision.HandLandmarkerOptions(
                 base_options=BaseOptions(model_asset_path=HAND_MODEL, delegate=BaseOptions.Delegate.CPU),
+                running_mode=vision.RunningMode.IMAGE,
                 num_hands=2,
                 min_hand_detection_confidence=0.3,
                 min_hand_presence_confidence=0.3,
@@ -168,6 +184,7 @@ class PoseEngine:
         self.action_key = None
         self.affected_side = None
         self.guidance_rois = {}
+        self.hand_executor = ThreadPoolExecutor(max_workers=1)
         self.reset()
 
     def set_action_key(self, key, affected_side=None):
@@ -189,20 +206,32 @@ class PoseEngine:
         t = started if timestamp is None else float(timestamp)
         self.frame_no += 1
         pose_inferred = self.pose_result is None or self.frame_no % POSE_EVERY_N_FRAMES == 1
-        if pose_inferred:
-            result = self.model.predict(
-                img, imgsz=IMGSZ, conf=0.5, verbose=False, device=self.device)[0]
-            self.pose_result = result
-            self.pose = result.keypoints.data[0].cpu().numpy() if len(result.keypoints.data) else None
-            self.pose_t = t
+        hand_task = None
+        # Full-frame detection is independent of pose; wrist crops and retries need this frame's pose.
+        if pose_inferred and self.hands is not None and getattr(self, "action_key", None) != "abduction":
+            hand_task = self.hand_executor.submit(_detect_hand_frame, self.hands, img)
+        pose_started = time.monotonic()
+        try:
+            if pose_inferred:
+                result = self.model.predict(
+                    img, imgsz=IMGSZ, conf=0.5, verbose=False, device=self.device)[0]
+                self.pose_result = result
+                self.pose = result.keypoints.data[0].cpu().numpy() if len(result.keypoints.data) else None
+                self.pose_t = t
+        finally:
+            pose_finished = time.monotonic()
+            # Drain an in-flight detector even if pose inference fails, before reset/close can reuse it.
+            initial_detection, parallel_hand_ms = hand_task.result() if hand_task is not None else (None, 0.0)
 
-        pose_finished = time.monotonic()
+        hand_started = time.monotonic()
         h, w = img.shape[:2]
+        detection_stats = {}
         hlist = detect_hands_by_half(
             self.hands, img, self.tracker.last, self.guidance_rois, self.pose,
             wrist_crops=getattr(self, "action_key", None) == "abduction",
             required_side=(getattr(self, "affected_side", None)
-                           if getattr(self, "action_key", None) in ("cup", "press", "abduction") else None))
+                           if getattr(self, "action_key", None) in ("cup", "press", "abduction") else None),
+            initial_detection=initial_detection, detection_stats=detection_stats)
         hand_finished = time.monotonic()
         hlist = self.tracker.update(hlist, t, self.pose, w)
         # Copy before smoothing; display points must never feed back into action or tracking state.
@@ -220,8 +249,8 @@ class PoseEngine:
         canvas = img
         if draw:
             canvas = self.pose_result.plot(img=img.copy())
-            for hand in hlist:
-                if hand.get("state", "fresh") != "fresh":
+            for hand in display_hands:
+                if hand.get("state", "fresh") != "fresh" or hand.get("predicted"):
                     continue
                 for link in HAND_LINKS:
                     cv2.line(canvas, tuple(hand["pts"][link.start].astype(int)),
@@ -259,11 +288,13 @@ class PoseEngine:
             "processing_ms": (time.monotonic() - started) * 1000.0,
             "drawing_ms": drawing_ms,
             "recognition_ms": (draw_started - started) * 1000.0,
-            "pose_inference_ms": (pose_finished - started) * 1000.0 if pose_inferred else 0.0,
-            "hand_detection_ms": (hand_finished - pose_finished) * 1000.0,
+            "pose_inference_ms": (pose_finished - pose_started) * 1000.0 if pose_inferred else 0.0,
+            "hand_detection_ms": parallel_hand_ms + (hand_finished - hand_started) * 1000.0,
             "tracking_ms": (draw_started - hand_finished) * 1000.0,
+            **detection_stats,
         }
         return canvas, frame
 
     def close(self):
+        self.hand_executor.shutdown(wait=True)
         self.hands.close()

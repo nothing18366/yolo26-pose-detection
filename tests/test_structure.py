@@ -33,7 +33,7 @@ class StructureTests(unittest.TestCase):
             for extension in ("mp4", "jpg", "srt"):
                 self.assertTrue((MEDIA_DIR / f"{action.key}.{extension}").is_file())
 
-    def test_layout_only_change_preserves_trend_identity(self):
+    def test_verified_sources_preserve_trend_identity(self):
         self.assertEqual(database.RehabStore.algorithm_fingerprint(), "989357def6b46bd9")
         with tempfile.TemporaryDirectory() as directory, patch.object(database, "MODEL_DIR", Path(directory)):
             self.assertNotEqual(database.RehabStore.algorithm_fingerprint(), "989357def6b46bd9")

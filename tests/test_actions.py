@@ -17,7 +17,6 @@ from rehab_service.recognition.metrics import (
     FOUR,
     WRIST,
     angle_at,
-    curl_metric,
     finger_angles,
     fingers_closed,
     fingers_open,
@@ -25,10 +24,8 @@ from rehab_service.recognition.metrics import (
     line_angle,
     palm_center,
 )
-from rehab_service.recognition.actions import ELBOW as A_ELBOW, WRIST as A_WRIST  # noqa: F401  (保持与实现同一份索引)
 from rehab_service.recognition.actions import (ActionContext, CupTransfer, FingerAbduction,
                      FingerPress, FingerStretch, FistOpenClose, RubBackOfHand)
-from rehab_service.recognition.templates import load as load_template
 from rehab_service.recognition.tracking import HandTracker
 
 

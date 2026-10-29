@@ -17,25 +17,29 @@ def main():
     parser.add_argument("--adb", default="adb")
     parser.add_argument("--device", required=True)
     parser.add_argument("--server", required=True)
-    parser.add_argument("--phase", choices=("before", "after"), required=True)
     parser.add_argument("--actions", nargs="+", default=["rub", "fist"])
-    parser.add_argument("--modes", nargs="+", help="Retest only these modes; defaults to all modes for the phase")
+    parser.add_argument("--modes", nargs="+", help="Sample only these current display modes")
     parser.add_argument("--sample-seconds", type=int, default=30)
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--label-prefix", default="", help="Unique prefix to avoid appending an earlier device sample")
+    parser.add_argument("--test-return-pause", action="store_true", help="Exercise annotated-video timeout against the disposable test fixture")
     args = parser.parse_args()
     assert args.server.endswith(":18121"), "Use the isolated benchmark port"
     assert 15 <= args.sample_seconds <= 60
+    assert 1 <= args.repeats <= 3
     args.output.mkdir(parents=True, exist_ok=True)
     adb = [args.adb, "-s", args.device]
-    modes = ("local", "remote") if args.phase == "before" else ("local", "skeleton", "diagnostic")
+    modes = ("local", "skeleton", "annotated", "diagnostic")
     if args.modes:
-        assert set(args.modes) <= set(modes), "Unsupported modes for this phase"
+        assert set(args.modes) <= set(modes), "Unsupported display modes"
         modes = args.modes
     print("Benchmark PID", os.getpid(), flush=True)
     for action in args.actions:
-        for repeat in range(1, 4):
+        for repeat in range(1, args.repeats + 1):
             for mode in modes:
-                prefix = args.phase + ("-retest" if args.modes else "")
-                label = f"{prefix}-{action}-{repeat}-{mode}"
+                label = f"{action}-{repeat}-{mode}"
+                if args.label_prefix:
+                    label = args.label_prefix + "-" + label
                 if (args.output / (label + ".jsonl")).exists():
                     continue
                 print(time.strftime("%H:%M:%S"), "START", label, f"15s warmup + {args.sample_seconds}s sample", flush=True)
@@ -43,6 +47,8 @@ def main():
                     "-e", "benchmarkUrl", args.server, "-e", "action", action, "-e", "mode", mode, "-e", "label", label,
                     "-e", "sampleSeconds", str(args.sample_seconds),
                     "com.robint.sdk.demo.test/androidx.test.runner.AndroidJUnitRunner"]
+                if args.test_return_pause:
+                    command[-1:-1] = ["-e", "testReturnPause", "true"]
                 stop = threading.Event()
 
                 def sample_system():

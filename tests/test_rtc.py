@@ -100,13 +100,16 @@ def offer_data(sdp, action="fist"):
     }
 
 
-async def test_webrtc(client, diagnostic=False):
+async def test_webrtc(client, preview_mode="keypoints", patient_login=False):
+    diagnostic = preview_mode == "diagnostic"
+    annotated = preview_mode == "annotated"
     pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     datachannel = pc.createDataChannel("rehab")
     events = asyncio.Queue()
-    pose = pc.createDataChannel("pose", ordered=False, maxRetransmits=0)
+    pose = pc.createDataChannel("pose", ordered=False, maxRetransmits=0) if not annotated else None
     poses = asyncio.Queue()
-    pose.on("message", lambda message: poses.put_nowait(json.loads(message)))
+    if pose is not None:
+        pose.on("message", lambda message: poses.put_nowait(json.loads(message)))
     received_video = asyncio.Event()
     pc.addTrack(TestVideoTrack())
 
@@ -119,6 +122,8 @@ async def test_webrtc(client, diagnostic=False):
         async def read_one():
             frame = await track.recv()
             assert frame.width == 320 and frame.height == 240
+            pixels = frame.to_ndarray(format="bgr24")
+            assert pixels.mean() > 240 if annotated else pixels.mean() < 5
             received_video.set()
         asyncio.create_task(read_one())
 
@@ -129,8 +134,11 @@ async def test_webrtc(client, diagnostic=False):
         run = client.post("/api/v1/training-runs", json={"patient_id": patient["id"], "mode": "single", "action": "fist", "target_reps": 3}).json()
         client.put("/api/v1/training-runs/" + run["id"] + "/feedback/pre", json={"state": "skipped"})
         payload["session_id"] = client.post("/api/v1/sessions", json={"run_id": run["id"], "item_index": 0}).json()["id"]
-        if diagnostic:
-            payload["preview_mode"] = "diagnostic"
+        if patient_login:
+            app.state.auth.save_patient_account(patient["id"], {"username": "annotated-test", "password": "test-pass-123"})
+            token = client.post("/api/v1/auth/patient-login", json={"username": "annotated-test", "password": "test-pass-123"}).json()["token"]
+            client.headers["Authorization"] = "Bearer " + token
+        payload["preview_mode"] = preview_mode
         response = await asyncio.to_thread(client.post, "/rtc/offer", json=payload)
         assert response.status_code == 200, response.text
         assert server.engine.action_key == "fist" and server.engine.affected_side == "left"
@@ -152,11 +160,16 @@ async def test_webrtc(client, diagnostic=False):
         assert 0 < result["left_hand_fps"] < result["body_fps"] < result["processed_fps"]
         assert result["right_hand_fps"] == 0
         assert result["hand_detection_ms"] == .6 and result["tracking_ms"] == .1
-        packet = await asyncio.wait_for(poses.get(), 10)
-        assert packet["session_id"] == payload["session_id"] and packet["seq"] > 0
-        assert packet["width"] == 320 and packet["height"] == 240
-        assert packet["completed_at_ms"] >= packet["decoded_at_ms"]
-        assert server.engine.last_draw is False
+        for key in ("input_wait_ms", "image_conversion_ms", "worker_wait_ms", "inference_ms", "result_ms"):
+            assert result["timing"][key] >= 0, (key, result["timing"])
+        if not annotated:
+            packet = await asyncio.wait_for(poses.get(), 10)
+            assert packet["session_id"] == payload["session_id"] and packet["seq"] > 0
+            assert packet["width"] == 320 and packet["height"] == 240
+            assert packet["completed_at_ms"] >= packet["decoded_at_ms"]
+            assert packet["timing"]["send_started_at_ms"] >= packet["completed_at_ms"]
+            assert packet["timing"]["result_to_send_ms"] >= 0
+        assert server.engine.last_draw is annotated
         path = "/rtc/sessions/" + payload["session_id"] + "/frame.png"
         if diagnostic:
             await asyncio.wait_for(received_video.wait(), 10)
@@ -165,6 +178,10 @@ async def test_webrtc(client, diagnostic=False):
             assert png.headers["cache-control"] == "no-store"
             import cv2
             assert not cv2.imdecode(np.frombuffer(png.content, dtype=np.uint8), cv2.IMREAD_COLOR).any()
+        elif annotated:
+            await asyncio.wait_for(received_video.wait(), 10)
+            assert server.active_diagnostic is None
+            assert (await asyncio.to_thread(client.get, path)).status_code == (403 if patient_login else 409)
         else:
             assert not received_video.is_set()
             assert all(sender.track is None for sender in server.active_client.getSenders())
@@ -188,7 +205,10 @@ async def test_webrtc(client, diagnostic=False):
                     update = await events.get()
                     if update.get("skipped_pose", 0) > 0:
                         return
-            await asyncio.wait_for(wait_for_skip(), 10)
+            if not annotated:
+                await asyncio.wait_for(wait_for_skip(), 10)
+            else:
+                assert result.get("skipped_pose", 0) == 0 and poses.empty()
             datachannel.send(json.dumps({"type": "stop"}))
             while True:
                 summary = await asyncio.wait_for(events.get(), 10)
@@ -201,7 +221,7 @@ async def test_webrtc(client, diagnostic=False):
                 break
             await asyncio.sleep(0.1)
         assert server.active_client is None
-        assert (await asyncio.to_thread(client.get, path)).status_code == 409
+        assert (await asyncio.to_thread(client.get, path)).status_code == (403 if patient_login else 409)
     finally:
         await pc.close()
 
@@ -218,7 +238,8 @@ def test_service():
         assert client.post("/rtc/offer", json=offer_data("bad", action="unknown")).status_code == 400
         assert client.post("/rtc/offer", json=offer_data("bad")).status_code == 400
         asyncio.run(test_webrtc(client))
-        asyncio.run(test_webrtc(client, diagnostic=True))
+        asyncio.run(test_webrtc(client, preview_mode="diagnostic"))
+        asyncio.run(test_webrtc(client, preview_mode="annotated", patient_login=True))
 
 
 if __name__ == "__main__":

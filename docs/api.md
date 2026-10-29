@@ -30,11 +30,13 @@
 | GET `/api/v1/actions` | 六动作说明、封面、版本、files 各文件 sha256/bytes/url、review |
 | PATCH `/api/v1/actions/{key}/review` | 工作人员提交 `{content_version,state:"pending/approved/rejected",reviewer,note}`；版本不符返回 409 |
 
-`POST /rtc/offer` 必须带同一 Bearer 令牌及 `{type:"offer",sdp:"...",session_id:"...",preview_mode:"keypoints"}`。`preview_mode` 默认 keypoints，仅上传视频；diagnostic 仅允许工作人员，并协商回传解码原图视频，权限检查先于占用训练名额。服务读取会话快照，不信任 offer 里的患者或次数覆盖。第二客户端返回 409。可靠 `rehab` 通道保持 started/result/summary/error 字段，附带 session_id；发送 `{type:"stop"}` 正常结束，或 `{type:"stop",reason:"user_discomfort"}`。可靠保存、重复结束、ack 丢失释放和最新帧队列仍沿用现有实现。
+`POST /rtc/offer` 必须带同一 Bearer 令牌及 `{type:"offer",sdp:"...",session_id:"...",preview_mode:"keypoints"}`。`preview_mode` 默认 keypoints，仅上传视频并返回骨架；annotated 为日常标注视频回传，不发送 pose 消息，患者仅能访问本人会话；diagnostic 仅允许工作人员，回传解码原图视频并保留 pose，权限检查先于占用训练名额。服务读取会话快照，不信任 offer 里的患者或次数覆盖。第二客户端返回 409。可靠 `rehab` 通道保持 started/result/summary/error 字段，附带 session_id；发送 `{type:"stop"}` 正常结束，或 `{type:"stop",reason:"user_discomfort"}`。可靠保存、重复结束、ack 丢失释放和最新帧队列仍沿用现有实现。
 
-`GET /health` 增加 capabilities：local_skeleton_v1、clock_sync_v1、diagnostic_video、diagnostic_png。`GET /rtc/sessions/{id}/frame.png` 仅工作人员、仅当前诊断会话可取当前已解码帧，响应 image/png、Cache-Control: no-store，不在服务端落盘；无当前诊断图像返回 409。骨架与时钟消息见 [local_skeleton.md](local_skeleton.md)。
+`GET /health` capabilities：local_skeleton_v1、annotated_video_v1、clock_sync_v1、diagnostic_video、diagnostic_png。旧客户端省略模式仍使用 keypoints；新客户端检查所选模式能力，不自动降级。`GET /rtc/sessions/{id}/frame.png` 仅工作人员、仅当前 diagnostic 会话可取当前已解码帧，响应 image/png、Cache-Control: no-store，不在服务端落盘；无当前诊断图像返回 409，患者请求返回 403。骨架与时钟消息见 [display_modes.md](display_modes.md)。
 
-`result` 另含 `body_fps/left_hand_fps/right_hand_fps` 与对应 `*_updates_total`，用于区分新检测更新率与视频帧率；`pose_inferred/pose_inference_ms/hand_detection_ms/tracking_ms` 提供最近帧分段耗时。它们只用于诊断和可选性能采样，不进入训练汇总或患者数据库；口径见 [local_skeleton.md](local_skeleton.md)。
+`result` 另含 `body_fps/left_hand_fps/right_hand_fps` 与对应 `*_updates_total`，用于区分新检测更新率与视频帧率；`pose_inferred/pose_inference_ms/hand_detection_ms/tracking_ms` 提供最近帧分段耗时。它们只用于诊断和可选性能采样，不进入训练汇总或患者数据库；口径见 [display_modes.md](display_modes.md)。
+
+可选 `result.timing/pose.timing` 提供同帧等待、图像转换、推理、业务更新和发送时间信息；`hand_full_detections/hand_crop_detections` 为本帧检测调用次数。骨架 `seq` 可关联 Android 首次绘制记录；分段定义、时钟误差及未绘出消息的处理见本地骨架说明。字段为增量扩展，不改变动作 key、业务状态、坐标格式或停止流程。
 
 
 ## 训练与结果语义

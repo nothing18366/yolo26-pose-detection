@@ -1,7 +1,9 @@
 """Current-frame rendering and action-aware hand detection regressions."""
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -87,6 +89,24 @@ def test_display_points_do_not_change_smoothed_action_or_tracker_points():
     assert missing["display_hands"][0]["predicted"] is True
 
 
+def test_server_annotation_uses_display_points_without_changing_action_smoothing():
+    engine = PoseEngine.__new__(PoseEngine)
+    engine.device, engine.model, engine.hands, engine.guidance_rois = "cpu", FakeModel(), None, {}
+    engine.reset()
+    for t, x, smoothed_x in ((1., 100., 100.), (1.1, 300., 170.)):
+        with patch("rehab_service.recognition.inference.detect_hands_by_half", return_value=[
+                {"side": "right", "pts": np.tile([x, 100.], (21, 1))}]), \
+                patch("rehab_service.recognition.inference.cv2.circle") as circle:
+            _, metrics = engine.process(np.zeros((480, 640, 3), dtype=np.uint8), t, draw=True)
+            assert all(call.args[1] == (int(x), 100) for call in circle.call_args_list)
+            assert circle.call_count == 21
+            assert metrics["hands"][0]["pts"][0, 0] == smoothed_x
+    with patch("rehab_service.recognition.inference.detect_hands_by_half", return_value=[]), \
+            patch("rehab_service.recognition.inference.cv2.circle") as circle:
+        engine.process(np.zeros((480, 640, 3), dtype=np.uint8), 1.2, draw=True)
+        assert not circle.called
+
+
 def test_stage_timings_distinguish_pose_refresh_from_cached_pose():
     engine = PoseEngine.__new__(PoseEngine)
     engine.device, engine.model, engine.hands, engine.guidance_rois = "cpu", FakeModel(), None, {}
@@ -100,6 +120,60 @@ def test_stage_timings_distinguish_pose_refresh_from_cached_pose():
         stages = [frame[key] for key in ("pose_inference_ms", "hand_detection_ms", "tracking_ms")]
         assert all(value >= 0 for value in stages)
         assert sum(stages) <= frame["processing_ms"]
+
+
+def test_full_hand_detection_overlaps_pose_without_duplicate_detection():
+    hand_started = Event()
+
+    class Detector:
+        calls = 0
+
+        def detect(self, image):
+            self.calls += 1
+            hand_started.set()
+            hands = [[SimpleNamespace(x=x, y=.3 + i * .005, z=0.) for i in range(21)]
+                     for x in (.25, .75)]
+            return SimpleNamespace(hand_landmarks=hands, handedness=[
+                [SimpleNamespace(category_name=side)] for side in ("Left", "Right")])
+
+    class Model(FakeModel):
+        def predict(self, *args, **kwargs):
+            assert hand_started.wait(2), "Hand detection must start before body inference finishes"
+            return super().predict(*args, **kwargs)
+
+    engine = PoseEngine.__new__(PoseEngine)
+    engine.device, engine.model, engine.hands, engine.guidance_rois = "cpu", Model(), Detector(), {}
+    engine.reset()
+    with ThreadPoolExecutor(max_workers=1) as engine.hand_executor:
+        for t in (1., 1.1):
+            _, metrics = engine.process(np.zeros((480, 640, 3), dtype=np.uint8), t, draw=False)
+            assert len(metrics["hands"]) == 2
+        assert engine.model.calls == 1 and engine.hands.calls == 2
+
+
+def test_pose_failure_drains_parallel_hand_detection():
+    pose_failed, hand_finished = Event(), Event()
+
+    class Model:
+        def predict(self, *args, **kwargs):
+            pose_failed.set()
+            raise RuntimeError("pose failed")
+
+    class Detector:
+        def detect(self, image):
+            assert pose_failed.wait(2)
+            hand_finished.set()
+            return SimpleNamespace(hand_landmarks=[], handedness=[])
+
+    engine = PoseEngine.__new__(PoseEngine)
+    engine.device, engine.model, engine.hands, engine.guidance_rois = "cpu", Model(), Detector(), {}
+    engine.reset()
+    with ThreadPoolExecutor(max_workers=1) as engine.hand_executor:
+        try:
+            engine.process(np.zeros((48, 64, 3), dtype=np.uint8), draw=False)
+            assert False, "Pose failure must propagate"
+        except RuntimeError as exc:
+            assert str(exc) == "pose failed" and hand_finished.is_set()
 
 
 def test_duplicate_hand_triggers_forearm_crop():
@@ -185,8 +259,10 @@ def test_missing_affected_hand_is_not_invented():
 
 def test_bilateral_actions_still_search_for_second_hand():
     detector = CountingLandmarker(["Left", "Right"])
-    hands = detect_hands_by_half(detector, np.zeros((480, 640, 3), dtype=np.uint8))
+    stats = {}
+    hands = detect_hands_by_half(detector, np.zeros((480, 640, 3), dtype=np.uint8), detection_stats=stats)
     assert len(hands) == 2 and detector.calls == 2
+    assert stats == {"hand_full_detections": 1, "hand_crop_detections": 1}
 
 
 def test_abduction_does_not_detect_healthy_wrist_crop():
@@ -194,9 +270,11 @@ def test_abduction_does_not_detect_healthy_wrist_crop():
     pose = np.zeros((17, 3))
     pose[7], pose[9] = [120, 160, .99], [160, 260, .99]
     pose[8], pose[10] = [500, 160, .99], [460, 260, .99]
+    stats = {}
     hands = detect_hands_by_half(detector, np.zeros((480, 640, 3), dtype=np.uint8),
-                                 pose=pose, wrist_crops=True, required_side="right")
+                                 pose=pose, wrist_crops=True, required_side="right", detection_stats=stats)
     assert detector.calls == 1 and len(hands) == 1 and hands[0]["side"] == "right"
+    assert stats == {"hand_full_detections": 0, "hand_crop_detections": 1}
 
 
 def test_all_actions_request_only_the_hands_they_use():
@@ -221,6 +299,7 @@ def test_hand_assignment_does_not_advance_tracking_state():
     previous = tracker.last["right"]
     assert tracker.assign([hand])["right"] is hand
     assert tracker.last["right"] is previous and previous["_t"] == 1.0
+
 
 
 if __name__ == "__main__":

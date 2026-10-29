@@ -8,6 +8,7 @@ import os
 import time
 from pathlib import Path
 
+from av import VideoFrame
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCRtpSender, RTCSessionDescription, VideoStreamTrack
 from aiortc.codecs import h264
 from fastapi import APIRouter, HTTPException, Request
@@ -115,7 +116,7 @@ async def offer(request: Request):
         if not isinstance(payload, dict) or payload.get("type") != "offer" or not payload.get("sdp"):
             raise ValueError("需要 SDP offer")
         preview_mode = payload.get("preview_mode", "keypoints")
-        if preview_mode not in ("keypoints", "diagnostic"):
+        if preview_mode not in ("keypoints", "annotated", "diagnostic"):
             raise ValueError("不支持的显示模式")
         diagnostic = preview_mode == "diagnostic"
         if diagnostic:
@@ -143,7 +144,7 @@ async def offer(request: Request):
     closing = False
     pending = None
     frame_ready = asyncio.Event()
-    outgoing = LatestVideoTrack() if diagnostic else None
+    outgoing = LatestVideoTrack() if preview_mode != "keypoints" else None
     dropped_input = 0
     decoded_total = 0
     processed_total = 0
@@ -272,6 +273,11 @@ async def offer(request: Request):
         except Exception:
             await close_session()
 
+    def infer(image):
+        started_ms = time.monotonic() * 1000
+        canvas, metrics = engine.process(image, draw=preview_mode == "annotated")
+        return canvas, metrics, started_ms, time.monotonic() * 1000
+
     async def process_video():
         nonlocal pending, processed_frames, processed_total, fps_started, processed_fps, worker_task, skipped_pose, performance
         nonlocal started_at, started_clock, last_checkpoint, checkpoint_task
@@ -291,8 +297,9 @@ async def offer(request: Request):
                         started_at, started_clock = now(), started
                         fps_started = started
                     image = frame.to_ndarray(format="bgr24")
-                    worker_task = asyncio.create_task(asyncio.to_thread(engine.process, image, draw=False))
-                    _, metrics = await asyncio.shield(worker_task)
+                    submitted_ms = time.monotonic() * 1000
+                    worker_task = asyncio.create_task(asyncio.to_thread(infer, image))
+                    canvas, metrics, inference_started_ms, inference_finished_ms = await asyncio.shield(worker_task)
                     worker_task = None
                     result = session.update(metrics)
                     if session_id and started - last_checkpoint >= 1 and (checkpoint_task is None or checkpoint_task.done()):
@@ -302,6 +309,14 @@ async def offer(request: Request):
                         checkpoint_task = asyncio.create_task(asyncio.to_thread(
                             app.state.store.checkpoint, session_id, snapshot, started - started_clock, started_at))
                         last_checkpoint = started
+                result_ready_ms = time.monotonic() * 1000
+                timing = {
+                    "input_wait_ms": started * 1000 - decoded_ms,
+                    "image_conversion_ms": submitted_ms - started * 1000,
+                    "worker_wait_ms": inference_started_ms - submitted_ms,
+                    "inference_ms": inference_finished_ms - inference_started_ms,
+                    "result_ms": result_ready_ms - inference_finished_ms,
+                }
                 processed_frames += 1
                 processed_total += 1
                 fresh_hands = {hand["side"] for hand in metrics.get("display_hands", metrics.get("hands", []))
@@ -332,30 +347,43 @@ async def offer(request: Request):
                     "pose_inference_ms": metrics.get("pose_inference_ms"),
                     "hand_detection_ms": metrics.get("hand_detection_ms"),
                     "tracking_ms": metrics.get("tracking_ms"),
+                    "hand_full_detections": metrics.get("hand_full_detections"),
+                    "hand_crop_detections": metrics.get("hand_crop_detections"),
+                    "timing": timing,
                     "preview_mode": preview_mode,
                     "skipped_pose": skipped_pose,
                 })
                 for name in keypoint_frames:
                     result[name + "_fps"] = keypoint_fps[name]
                     result[name + "_updates_total"] = keypoint_totals[name]
-                if performance is not None:
-                    try:
-                        performance.write(json.dumps(dict(result, sampled_at=time.time())) + "\n")
-                    except OSError:
-                        logging.exception("性能采样写入失败，训练继续")
-                        performance.close()
-                        performance = None
                 if outgoing is not None:
-                    outgoing.push(frame)
+                    output_frame = frame
+                    if preview_mode == "annotated":
+                        output_frame = VideoFrame.from_ndarray(canvas, format="bgr24")
+                        output_frame.pts, output_frame.time_base = frame.pts, frame.time_base
+                    outgoing.push(output_frame)
                 if started_sent:
                     send(result)
                     if pose_channel is not None and pose_channel.readyState == "open":
                         if pose_channel.bufferedAmount == 0:
                             packet = pose_message(metrics, session_id, processed_total, decoded_ms,
                                                   time.monotonic() * 1000)
+                            send_started_ms = time.monotonic() * 1000
+                            packet["timing"] = dict(timing, send_started_at_ms=send_started_ms,
+                                                  result_to_send_ms=send_started_ms - result_ready_ms)
                             pose_channel.send(json.dumps(packet, separators=(",", ":"), allow_nan=False))
+                            timing["result_to_send_ms"] = send_started_ms - result_ready_ms
+                            timing["pose_send_call_ms"] = time.monotonic() * 1000 - send_started_ms
                         else:
                             skipped_pose += 1
+                if performance is not None:
+                    try:
+                        performance.write(json.dumps(dict(result, sampled_at=time.time(), seq=processed_total,
+                            fresh_left_hand="left" in fresh_hands, fresh_right_hand="right" in fresh_hands)) + "\n")
+                    except OSError:
+                        logging.exception("性能采样写入失败，训练继续")
+                        performance.close()
+                        performance = None
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -371,6 +399,9 @@ async def offer(request: Request):
     def on_datachannel(datachannel):
         nonlocal channel, pose_channel, started_sent
         if datachannel.label == "pose":
+            if preview_mode == "annotated":
+                datachannel.close()
+                return
             if datachannel.ordered or datachannel.maxRetransmits != 0:
                 datachannel.close()
                 tasks.append(asyncio.create_task(close_session("protocol_error")))
